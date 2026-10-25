@@ -1,0 +1,14 @@
+{
+    "KPlugin": {
+        "Id": "weave-spike",
+        "Name": "Weave drag logging spike",
+        "Description": "Log drag and native tiling behaviour; geometry experiments are off by default",
+        "Version": "0.1.0",
+        "License": "MIT",
+        "ServiceTypes": [],
+        "EnabledByDefault": false
+    },
+    "KPackageStructure": "KWin/Script",
+    "X-Plasma-API": "javascript",
+    "X-Plasma-MainScript": "code/main.js"
+}
