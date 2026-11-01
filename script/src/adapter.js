@@ -21,6 +21,11 @@
     var STATE_SERVICE = "org.weave.State";
     var BUILD_ID = "@@BUILD_ID@@";
     var MIN_PANE = 100;
+    var FOCUS_RATIO_MIN = 0.3;
+    var FOCUS_RATIO_MAX = 0.8;
+    var STAGE_GRADIENT = 0.5;
+    var STAGE_RAIL_MIN = {w: 140, h: 110};
+    var ownActivation = null;
     var templates = typeof WEAVE_TEMPLATES === "undefined" ? {} : WEAVE_TEMPLATES;
     var activation = new Map();
     var activationTick = 0;
@@ -100,6 +105,8 @@
                 adopted: false,
                 innerGap: null,
                 layout: config.defaultLayout,
+                stage: null,
+                focusRatio: null,
                 groups: []
             };
             contexts.set(key, context);
@@ -138,14 +145,21 @@
             dropNativeTiles: configBoolean(readConfigValue("dropNativeTiles", true), true),
             persist: configBoolean(readConfigValue("persist", true), true),
             masterRatio: Number(readConfigValue("masterRatio", 0.6)),
+            focusRatio: Number(readConfigValue("focusRatio", 0.6)),
             defaultLayout: String(readConfigValue("defaultLayout", "master")),
             logLevel: String(readConfigValue("logLevel", "off"))
         };
         if (config.masterRatio < 0 || config.masterRatio > 1) { config.masterRatio = 0.6; }
-        if (!api.tree.validLayout(config.defaultLayout)) { config.defaultLayout = "master"; }
+        config.focusRatio = clampFocusRatio(config.focusRatio, 0.6);
+        if (!api.tree.validAnyLayout(config.defaultLayout)) { config.defaultLayout = "master"; }
         if (["off", "info", "debug"].indexOf(config.logLevel) < 0) {
             config.logLevel = "off";
         }
+    }
+
+    function clampFocusRatio(value, fallback) {
+        if (typeof value !== "number" || isNaN(value)) { return fallback; }
+        return Math.max(FOCUS_RATIO_MIN, Math.min(FOCUS_RATIO_MAX, value));
     }
 
     function readConfigValue(name, fallback) {
@@ -186,9 +200,47 @@
         return outputName(property(window, "output")) === context.outputName;
     }
 
+    function stageLayout(context) {
+        return context.layout === "stage";
+    }
+
+    function stageRatio(context) {
+        return context.focusRatio === null ? config.focusRatio : context.focusRatio;
+    }
+
+    function stageParams(context) {
+        return {
+            gaps: contextGaps(context),
+            focusRatio: stageRatio(context),
+            gradient: STAGE_GRADIENT,
+            railCellMin: STAGE_RAIL_MIN
+        };
+    }
+
+    // Brings the stage state in line with the tiled ids without moving anyone.
+    function syncStage(context) {
+        var state = context.stage || {focus: null, cells: []};
+        api.stage.order(state).forEach(function (id) {
+            if (context.ids.indexOf(id) < 0) { state = api.stage.removeWindow(state, id); }
+        });
+        context.ids.forEach(function (id) { state = api.stage.addWindow(state, id); });
+        context.stage = state;
+    }
+
+    function stageRects(context) {
+        if (!context.stage) { syncStage(context); }
+        return api.stage.layoutStacked(context.stage, workArea(context),
+            stageParams(context)).rects;
+    }
+
+    function contextRects(context) {
+        if (stageLayout(context)) { return stageRects(context); }
+        return api.tree.layout(context.tree, workArea(context), contextGaps(context));
+    }
+
     function applyContext(context) {
         if (context.groups.length) { return; }
-        var rects = api.tree.layout(context.tree, workArea(context), contextGaps(context));
+        var rects = contextRects(context);
         context.ids.forEach(function (id) {
             var state = states.get(id);
             if (!state || state.mode !== "tiled" || !rects[id]) { return; }
@@ -210,8 +262,11 @@
     }
 
     function rebuild(context) {
-        context.tree = api.tree.generate(context.layout, context.ids.slice(),
-            {masterRatio: config.masterRatio});
+        if (stageLayout(context)) { syncStage(context); }
+        else {
+            context.tree = api.tree.generate(context.layout, context.ids.slice(),
+                {masterRatio: config.masterRatio});
+        }
         context.adopted = false;
         context.innerGap = null;
     }
@@ -502,7 +557,7 @@
     }
 
     function joinTiling(context, id) {
-        if (context.adopted && context.tree) {
+        if (context.adopted && context.tree && !stageLayout(context)) {
             var existing = context.ids[context.ids.length - 1];
             context.tree = api.tree.insert(context.tree, id, existing, "right");
             context.ids.push(id);
@@ -531,7 +586,7 @@
             scheduleSave();
             return;
         }
-        if (context.adopted) {
+        if (context.adopted && !stageLayout(context)) {
             context.tree = api.tree.remove(context.tree, id);
         } else {
             rebuild(context);
@@ -545,7 +600,7 @@
         if (state.mode === "float") { return; }
         state.mode = "float";
         state.context.ids = state.context.ids.filter(function (id) { return id !== state.id; });
-        if (state.context.adopted) {
+        if (state.context.adopted && !stageLayout(state.context)) {
             state.context.tree = api.tree.remove(state.context.tree, state.id);
         } else {
             rebuild(state.context);
@@ -652,8 +707,10 @@
             }
             if (state.mode === "tiled") {
                 previous.ids = previous.ids.filter(function (id) { return id !== state.id; });
-                previous.tree = api.tree.remove(previous.tree, state.id);
-                if (!previous.adopted) { rebuild(previous); }
+                if (!stageLayout(previous)) {
+                    previous.tree = api.tree.remove(previous.tree, state.id);
+                }
+                if (!previous.adopted || stageLayout(previous)) { rebuild(previous); }
             }
             discardIfEmpty(previous);
             state.context = next;
@@ -678,10 +735,14 @@
             var point = property(workspace, "cursorPos");
             var context = state.context;
             if (drag.context.key !== context.key) {
-                insertAtDrop(state, context, point);
+                if (!stageLayout(context)) { insertAtDrop(state, context, point); }
                 if (drag.context.ids.length) { applyContext(drag.context); }
                 else { discardIfEmpty(drag.context); }
                 applyContext(context);
+                return;
+            }
+            if (stageLayout(context)) {
+                dropInStage(state, point);
                 return;
             }
             var hit = point && api.tree.hitTest(context.tree, workArea(context),
@@ -699,8 +760,75 @@
                 applyContext(context);
             }
         } else if (drag.resize) {
-            resizeByFrame(state, drag);
+            if (stageLayout(state.context)) { resizeStage(state, drag); }
+            else { resizeByFrame(state, drag); }
         }
+    }
+
+    // Applies a new stage state; every change of the focus window is logged.
+    function setStage(context, next) {
+        var previous = context.stage ? context.stage.focus : null;
+        context.stage = next;
+        if (next.focus !== previous && next.focus !== null) {
+            log("info", "stage " + context.key + " focus -> " + next.focus);
+        }
+        applyContext(context);
+    }
+
+    function stageTargetAt(rects, draggedId, point) {
+        var ids = Object.keys(rects).filter(function (id) {
+            return id !== draggedId && api.geometry.contains(rects[id], point);
+        });
+        return ids.length ? ids[0] : null;
+    }
+
+    // Dropped on the focus slot or a rail cell: swap slots; elsewhere: spring back.
+    function dropInStage(state, point) {
+        var context = state.context;
+        var target = point ? stageTargetAt(stageRects(context), state.id,
+            {x: point.x, y: point.y}) : null;
+        if (!target) {
+            applyContext(context);
+            return;
+        }
+        setStage(context, api.stage.swap(context.stage, state.id, target));
+    }
+
+    // Which edge of the focus window the dragged side corresponds to, per slot.
+    function stageEdgeName(stage, id, side) {
+        if (stage.focus === id) {
+            if (side === "left") { return "focus-left"; }
+            return side === "right" ? "focus-right" : null;
+        }
+        var cell = stage.cells.filter(function (item) { return item.window === id; })[0];
+        if (!cell) { return null; }
+        if (cell.side === "left" && side === "right") { return "left-rail"; }
+        if (cell.side === "right" && side === "left") { return "right-rail"; }
+        return null;
+    }
+
+    // Only the focus ratio changes: it is derived from the sides that moved.
+    function resizeStage(state, drag) {
+        var context = state.context;
+        var end = roundedRect(property(state.window, "frameGeometry"));
+        var start = drag.startGeometry;
+        var ratios = [];
+        if (context.stage && start && end) {
+            changedSides(start, end).forEach(function (change) {
+                var where = stageEdgeName(context.stage, state.id, change.side);
+                if (!where) { return; }
+                var ratio = api.stage.focusRatioForEdge(workArea(context),
+                    contextGaps(context), where, change.coord);
+                if (ratio !== null) { ratios.push(ratio); }
+            });
+        }
+        if (ratios.length) {
+            context.focusRatio = clampFocusRatio(ratios.reduce(function (sum, value) {
+                return sum + value;
+            }, 0) / ratios.length, config.focusRatio);
+            log("debug", "focus ratio " + context.key + " -> " + context.focusRatio);
+        }
+        applyContext(context);
     }
 
     function insertAtDrop(state, context, point) {
@@ -787,7 +915,7 @@
 
     function dock(side) {
         var state = activeState();
-        if (!state || state.mode !== "tiled") { return; }
+        if (!state || state.mode !== "tiled" || stageLayout(state.context)) { return; }
         state.context.tree = api.tree.dockToSide(state.context.tree, state.id, side);
         state.context.adopted = true;
         applyContext(state.context);
@@ -821,10 +949,14 @@
         shortcut("Dock Right", function () { dock("right"); });
         shortcut("Layout Next", function () { cycleLayout(1); });
         shortcut("Layout Previous", function () { cycleLayout(-1); });
-        api.tree.LAYOUTS.forEach(function (name) {
+        api.tree.CYCLE_LAYOUTS.forEach(function (name) {
             var label = name.replace(/^./, function (c) { return c.toUpperCase(); });
             shortcut("Layout " + label, function () { switchLayout(name); });
         });
+        shortcut("Stage Pin", function () { stagePin(true); });
+        shortcut("Stage Unpin", function () { stagePin(false); });
+        shortcut("Stage Cycle Next", function () { stageCycle(1); });
+        shortcut("Stage Cycle Previous", function () { stageCycle(-1); });
         shortcut("Arrange Next", function () { arrangeStep(1); });
         shortcut("Arrange Previous", function () { arrangeStep(-1); });
         shortcut("Arrange Reapply", function () { reapplyGroup(); });
@@ -837,10 +969,50 @@
         if (id === null) { return; }
         activationTick++;
         activation.set(id, activationTick);
+        var own = ownActivation === id;
+        ownActivation = null;
         var state = states.get(id);
-        if (state && state.mode === "tiled" && state.context.layout === "monocle") {
-            raiseWindow(window);
-        }
+        if (!state || state.mode !== "tiled") { return; }
+        if (state.context.layout === "monocle") { raiseWindow(window); }
+        else if (stageLayout(state.context) && !own) { promoteActivated(state); }
+    }
+
+    // Focusing a managed window in a Stage context swaps it into the focus slot.
+    function promoteActivated(state) {
+        var context = state.context;
+        if (!context.stage || context.stage.focus === state.id) { return; }
+        var next = api.stage.promote(context.stage, state.id);
+        if (next.focus !== context.stage.focus) { setStage(context, next); }
+    }
+
+    function activateOwn(id) {
+        var state = id === null ? null : states.get(id);
+        if (!state) { return; }
+        ownActivation = id;
+        try { workspace.activeWindow = state.window; }
+        catch (error) { logError("activate " + id, error); ownActivation = null; }
+    }
+
+    function stageContext() {
+        var context = activeContext();
+        return context && stageLayout(context) && context.stage ? context : null;
+    }
+
+    function stagePin(pinned) {
+        var state = activeState();
+        var context = stageContext();
+        if (!state || !context || state.mode !== "tiled") { return; }
+        context.stage = pinned ? api.stage.pin(context.stage, state.id) :
+            api.stage.unpin(context.stage, state.id);
+    }
+
+    function stageCycle(direction) {
+        var context = stageContext();
+        if (!context) { return; }
+        var next = api.stage.cycle(context.stage, direction);
+        if (next.focus === context.stage.focus) { return; }
+        setStage(context, next);
+        activateOwn(next.focus);
     }
 
     function raiseWindow(window) {
@@ -855,7 +1027,9 @@
     }
 
     function orderedIds(context) {
-        var inTree = api.tree.leafOrder(context.tree).filter(function (id) {
+        var order = stageLayout(context) && context.stage ?
+            api.stage.order(context.stage) : api.tree.leafOrder(context.tree);
+        var inTree = order.filter(function (id) {
             return context.ids.indexOf(id) >= 0;
         });
         var missing = context.ids.filter(function (id) { return inTree.indexOf(id) < 0; });
@@ -864,10 +1038,12 @@
 
     function switchLayout(name) {
         var context = activeContext();
-        if (!context || !api.tree.validLayout(name)) { return; }
-        context.layout = name;
+        if (!context || !api.tree.validAnyLayout(name)) { return; }
+        var wasStage = stageLayout(context);
         context.ids = orderedIds(context);
-        rebuild(context);
+        context.layout = name;
+        if (name === "stage") { enterStage(context, wasStage); }
+        else { rebuild(context); }
         log("info", "layout " + context.key + " -> " + name);
         if (context.ids.length) { applyContext(context); }
         var state = activeState();
@@ -876,10 +1052,21 @@
         }
     }
 
+    // Builds the stage from the current order; the active window takes the focus.
+    function enterStage(context, wasStage) {
+        if (wasStage) { return; }
+        var active = activeState();
+        var focus = active && active.mode === "tiled" && active.context.key === context.key ?
+            active.id : null;
+        context.stage = api.stage.fromOrder(context.ids, focus);
+        context.adopted = false;
+        context.innerGap = null;
+    }
+
     function cycleLayout(step) {
         var context = activeContext();
         if (!context) { return; }
-        switchLayout(api.tree.cycleLayout(context.layout, step));
+        switchLayout(api.tree.cycleAnyLayout(context.layout, step));
     }
 
     function copyGroup(group) {

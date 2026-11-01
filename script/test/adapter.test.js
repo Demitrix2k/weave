@@ -182,7 +182,7 @@ test('script is inert by default and every shortcut has an empty default key', (
     const h = harness();
     h.add(makeWindow('a'));
     assert.deepEqual(geometry(h.windows[0]), {x: 0.4, y: 0.2, width: 799.6, height: 600.5});
-    assert.equal(h.shortcuts.size, 27);
+    assert.equal(h.shortcuts.size, 32);
     h.shortcuts.forEach(shortcut => assert.equal(shortcut.key, ''));
 });
 
@@ -960,6 +960,21 @@ const layoutRects = {
     }
 };
 
+// Stage in the default test area (work rect 8,8 1184x785, gaps 8, focusRatio 0.6).
+const stageRects = {
+    1: [[8, 8, 1184, 785]],
+    2: [[249, 8, 701, 785], [8, 265, 233, 142]],
+    3: [[249, 8, 701, 785], [8, 265, 233, 142], [958, 265, 234, 142]],
+    5: [[249, 8, 701, 785], [8, 265, 233, 142], [958, 265, 234, 142], [20, 415, 221, 135],
+        [958, 415, 222, 135]],
+    7: [[249, 8, 701, 785], [8, 265, 233, 142], [958, 265, 234, 142], [20, 415, 221, 135],
+        [958, 415, 222, 135], [31, 130, 210, 127], [958, 130, 211, 127]],
+    13: [[249, 8, 701, 785], [8, 265, 233, 142], [958, 265, 234, 142], [20, 415, 221, 135],
+        [958, 415, 222, 135], [31, 130, 210, 127], [958, 130, 211, 127],
+        [43, 558, 198, 121], [958, 558, 199, 121], [55, 8, 186, 114], [958, 8, 187, 114],
+        [958, 8, 187, 114], [958, 8, 187, 114]]
+};
+
 test('every layout gives exact rects for 1, 2, 3 and 5 windows through defaultLayout', () => {
     Object.keys(layoutRects).forEach(name => {
         [1, 2, 3, 5].forEach(count => {
@@ -981,18 +996,21 @@ test('layout shortcuts switch a populated context to the same exact rects', () =
     });
 });
 
-test('layout next and previous cycle master, columns, monocle, spiral', () => {
+test('layout next and previous cycle master, columns, monocle, spiral, stage', () => {
     const h = harness(Object.assign({logLevel: 'info'}, gapped));
     const windows = addWindows(h, 3);
     const seen = [];
-    for (let step = 0; step < 5; step++) {
+    for (let step = 0; step < 6; step++) {
         fireShortcut(h, 'Layout Next', windows[0]);
         seen.push(rectOf(windows[1]));
     }
     assert.deepEqual(seen, [layoutRects.columns[3][1], layoutRects.monocle[3][1],
-        layoutRects.spiral[3][1], layoutRects.master[3][1], layoutRects.columns[3][1]]);
+        layoutRects.spiral[3][1], stageRects[3][1], layoutRects.master[3][1],
+        layoutRects.columns[3][1]]);
     fireShortcut(h, 'Layout Previous', windows[0]);
     assert.deepEqual(rectOf(windows[1]), layoutRects.master[3][1]);
+    fireShortcut(h, 'Layout Previous', windows[0]);
+    assert.deepEqual(rectOf(windows[1]), stageRects[3][1]);
     fireShortcut(h, 'Layout Previous', windows[0]);
     assert.deepEqual(rectOf(windows[1]), layoutRects.spiral[3][1]);
 });
@@ -1070,8 +1088,8 @@ test('each context keeps its own layout and defaultLayout seeds new ones', () =>
     assert.deepEqual(left.map(rectOf), layoutRects.columns[2]);
 });
 
-test('invalid or reserved defaultLayout values fall back to master', () => {
-    ['bogus', 'stage', '', 'Columns'].forEach(value => {
+test('invalid defaultLayout values fall back to master', () => {
+    ['bogus', 'reserved', '', 'Columns', 'Stage'].forEach(value => {
         const h = harness(Object.assign({defaultLayout: value}, gapped));
         assert.deepEqual(addWindows(h, 3).map(rectOf), layoutRects.master[3], value);
     });
@@ -1327,4 +1345,346 @@ test('arranged windows are saved as floating with their remembered rectangle', (
     assert.equal(records.length, 2);
     records.forEach(record => assert.equal(record.mode, 'float'));
     assert.ok(records.every(record => record.floatGeom.width > 0));
+});
+
+// ---- stage layout ----
+
+const stageSettings = Object.assign({defaultLayout: 'stage'}, gapped);
+
+function totalWrites(windows) {
+    return windows.reduce((sum, window) => sum + window.geometryWrites, 0);
+}
+
+function dragMove(h, window, point) {
+    window.move = true;
+    window.interactiveMoveResizeStarted.emit();
+    window.frameGeometry = {x: point.x - 50, y: point.y - 50, width: 100, height: 100};
+    h.workspace.cursorPos = point;
+    window.interactiveMoveResizeFinished.emit();
+    window.move = false;
+}
+
+function centreOf(rect) {
+    return {x: rect[0] + rect[2] / 2, y: rect[1] + rect[3] / 2};
+}
+
+test('stage gives exact rects for 1, 2, 3, 5, 7 and 13 windows, also through the shortcut', () => {
+    [1, 2, 3, 5, 7, 13].forEach(count => {
+        const direct = harness(stageSettings);
+        assert.deepEqual(addWindows(direct, count).map(rectOf), stageRects[count],
+            'defaultLayout ' + count);
+        const switched = harness(gapped);
+        const windows = addWindows(switched, count);
+        fireShortcut(switched, 'Layout Stage', windows[0]);
+        assert.deepEqual(windows.map(rectOf), stageRects[count], 'shortcut ' + count);
+    });
+});
+
+test('stage overflow windows share the last rail cell as a stack', () => {
+    const h = harness(stageSettings);
+    const windows = addWindows(h, 13);
+    assert.deepEqual(rectOf(windows[11]), rectOf(windows[10]));
+    assert.deepEqual(rectOf(windows[12]), rectOf(windows[10]));
+});
+
+test('focusRatio is configurable and clamped to 0.3..0.8', () => {
+    const widths = {0.4: 467, 0.9: 934, 0.1: 350, abc: 701};
+    Object.keys(widths).forEach(value => {
+        const h = harness(Object.assign({focusRatio: value === 'abc' ? value : Number(value)},
+            stageSettings));
+        assert.equal(rectOf(addWindows(h, 3)[0])[2], widths[value], value);
+    });
+});
+
+test('activating a rail window swaps it into the focus slot and nothing else moves', () => {
+    const h = harness(Object.assign({logLevel: 'info'}, stageSettings));
+    const windows = addWindows(h, 5);
+    const before = windows.map(rectOf);
+    const writes = totalWrites(windows);
+    h.activate(windows[3]);
+    const after = windows.map(rectOf);
+    assert.deepEqual(after[3], before[0]);
+    assert.deepEqual(after[0], before[3]);
+    [1, 2, 4].forEach(index => assert.deepEqual(after[index], before[index]));
+    assert.equal(totalWrites(windows) - writes, 5);
+    assert.ok(h.logs.includes('weave stage ["DP-1",2] focus -> w3'));
+    // The focus window activated again, or a plain relayout trigger, writes nothing.
+    h.activate(windows[3]);
+    assert.equal(totalWrites(windows) - writes, 5);
+});
+
+test('activating unmanaged, floating or other-context windows leaves the stage alone', () => {
+    const h = harness(stageSettings);
+    const windows = addWindows(h, 3);
+    const other = makeWindow('other', {resourceClass: 'unmanaged'});
+    h.add(other);
+    const floated = makeWindow('floated');
+    h.add(floated);
+    fireShortcut(h, 'Toggle Float', floated);
+    const elsewhere = [makeWindow('r0', {output: 'DP-2'}), makeWindow('r1', {output: 'DP-2'})];
+    elsewhere.forEach(window => h.add(window));
+    const before = windows.map(rectOf);
+    const writes = totalWrites(windows);
+    h.activate(other);
+    h.activate(floated);
+    h.activate(elsewhere[1]);
+    assert.deepEqual(windows.map(rectOf), before);
+    assert.equal(totalWrites(windows), writes);
+    // The other output has its own stage: its activation only promotes there.
+    assert.deepEqual(rectOf(elsewhere[1]), stageRects[2][0]);
+    assert.deepEqual(rectOf(elsewhere[0]), stageRects[2][1]);
+});
+
+test('a new window takes a rail cell and only an activation promotes it', () => {
+    const h = harness(stageSettings);
+    const windows = addWindows(h, 2);
+    const extra = makeWindow('extra');
+    h.add(extra);
+    assert.deepEqual(rectOf(windows[0]), stageRects[3][0]);
+    assert.deepEqual(rectOf(extra), stageRects[3][2]);
+    h.activate(extra);
+    assert.deepEqual(rectOf(extra), stageRects[3][0]);
+    assert.deepEqual(rectOf(windows[0]), stageRects[3][2]);
+    assert.deepEqual(rectOf(windows[1]), stageRects[3][1]);
+});
+
+test('closing the focus window promotes the first rail window and others stay', () => {
+    const h = harness(stageSettings);
+    const windows = addWindows(h, 3);
+    h.remove(windows[0]);
+    assert.deepEqual(rectOf(windows[1]), stageRects[3][0]);
+    assert.deepEqual(rectOf(windows[2]), stageRects[3][2]);
+});
+
+test('pinned windows keep their cell while the others rotate', () => {
+    const h = harness(stageSettings);
+    const windows = addWindows(h, 3);
+    fireShortcut(h, 'Stage Pin', windows[1]);
+    fireShortcut(h, 'Stage Cycle Next', windows[0]);
+    assert.deepEqual(rectOf(windows[1]), stageRects[3][1]);
+    assert.deepEqual(rectOf(windows[2]), stageRects[3][0]);
+    assert.deepEqual(rectOf(windows[0]), stageRects[3][2]);
+    h.activate(windows[1]);
+    assert.deepEqual(rectOf(windows[1]), stageRects[3][1]);
+    fireShortcut(h, 'Stage Unpin', windows[1]);
+    h.activate(windows[1]);
+    assert.deepEqual(rectOf(windows[1]), stageRects[3][0]);
+});
+
+test('stage cycle next and previous promote the first and last rail window', () => {
+    const h = harness(stageSettings);
+    const windows = addWindows(h, 5);
+    const home = windows.map(rectOf);
+    fireShortcut(h, 'Stage Cycle Next', windows[0]);
+    assert.deepEqual(rectOf(windows[1]), home[0]);
+    assert.deepEqual(rectOf(windows[0]), home[1]);
+    assert.equal(h.workspace.activeWindow, windows[1]);
+    // The activation the cycle caused itself does not promote anything again.
+    h.activate(windows[1]);
+    assert.deepEqual(windows.map(rectOf)[0], home[1]);
+    fireShortcut(h, 'Stage Cycle Previous', windows[1]);
+    assert.deepEqual(rectOf(windows[4]), home[0]);
+    assert.deepEqual(rectOf(windows[1]), home[4]);
+    assert.equal(h.workspace.activeWindow, windows[4]);
+});
+
+test('stage shortcuts do nothing outside a stage context', () => {
+    const h = harness(gapped);
+    const windows = addWindows(h, 3);
+    const before = windows.map(rectOf);
+    ['Stage Pin', 'Stage Unpin', 'Stage Cycle Next', 'Stage Cycle Previous'].forEach(
+        name => fireShortcut(h, name, windows[1]));
+    assert.deepEqual(windows.map(rectOf), before);
+});
+
+test('stage drag: onto the focus slot swaps in, onto a rail cell swaps, elsewhere springs back',
+    () => {
+        const h = harness(stageSettings);
+        const windows = addWindows(h, 3);
+        const home = windows.map(rectOf);
+        dragMove(h, windows[1], centreOf(home[0]));
+        assert.deepEqual([1, 0, 2].map(i => rectOf(windows[i])), [home[0], home[1], home[2]]);
+        dragMove(h, windows[1], centreOf(home[2]));
+        assert.deepEqual(rectOf(windows[1]), home[2]);
+        assert.deepEqual(rectOf(windows[2]), home[0]);
+        assert.deepEqual(rectOf(windows[0]), home[1]);
+        const settled = windows.map(rectOf);
+        dragMove(h, windows[0], {x: 5000, y: 5000});
+        assert.deepEqual(windows.map(rectOf), settled);
+        dragMove(h, windows[0], {x: 245, y: 300});
+        assert.deepEqual(windows.map(rectOf), settled);
+    });
+
+test('stage drag of the focus window onto a rail cell promotes that cell window', () => {
+    const h = harness(stageSettings);
+    const windows = addWindows(h, 3);
+    const home = windows.map(rectOf);
+    dragMove(h, windows[0], centreOf(home[2]));
+    assert.deepEqual(rectOf(windows[2]), home[0]);
+    assert.deepEqual(rectOf(windows[0]), home[2]);
+    assert.deepEqual(rectOf(windows[1]), home[1]);
+});
+
+test('stage drag onto a pinned cell springs back', () => {
+    const h = harness(stageSettings);
+    const windows = addWindows(h, 3);
+    const home = windows.map(rectOf);
+    fireShortcut(h, 'Stage Pin', windows[2]);
+    dragMove(h, windows[0], centreOf(home[2]));
+    assert.deepEqual(windows.map(rectOf), home);
+});
+
+test('stage edge resize changes only the focus ratio, clamped, and survives a relayout', () => {
+    const h = harness(stageSettings);
+    const windows = addWindows(h, 3);
+    const home = windows.map(rectOf);
+    dragFrame(h, windows[0], {x: 366, width: 584});
+    assert.equal(rectOf(windows[0])[2], 468);
+    assert.deepEqual([1, 2].map(i => rectOf(windows[i])[1]), [home[1][1], home[2][1]]);
+    const extra = makeWindow('extra');
+    h.add(extra);
+    assert.equal(rectOf(windows[0])[2], 468);
+    h.remove(extra);
+    dragFrame(h, windows[0], {x: 10, width: 824});
+    assert.equal(rectOf(windows[0])[2], 934);
+    dragFrame(h, windows[0], {x: 590, width: 477});
+    assert.equal(rectOf(windows[0])[2], 350);
+    fireShortcut(h, 'Retile', windows[0]);
+    assert.equal(rectOf(windows[0])[2], 350);
+    assert.deepEqual([1, 2].map(i => rectOf(windows[i])[1]), [home[1][1], home[2][1]]);
+});
+
+test('stage rail edge drags use the inner side; outer sides and top or bottom are ignored', () => {
+    const h = harness(stageSettings);
+    const windows = addWindows(h, 3);
+    const home = windows.map(rectOf);
+    dragFrame(h, windows[1], {width: 292});
+    assert.equal(rectOf(windows[0])[2], 584);
+    dragFrame(h, windows[2], {x: 900, width: 292});
+    assert.equal(rectOf(windows[0])[2], 584);
+    dragFrame(h, windows[1], {x: 20, width: 280});
+    dragFrame(h, windows[1], {y: 300, height: 100});
+    assert.equal(rectOf(windows[0])[2], 584);
+    assert.equal(home.length, 3);
+});
+
+test('stage resize in one context leaves the focus ratio of the others alone', () => {
+    const h = harness(stageSettings);
+    const left = addWindows(h, 3);
+    const right = [makeWindow('r0', {output: 'DP-2'}), makeWindow('r1', {output: 'DP-2'})];
+    right.forEach(window => h.add(window));
+    dragFrame(h, left[0], {x: 366, width: 584});
+    assert.equal(rectOf(left[0])[2], 468);
+    assert.equal(rectOf(right[0])[2], 701);
+    h.activate(right[1]);
+    assert.equal(rectOf(left[0])[2], 468);
+    assert.deepEqual(rectOf(left[1]), [8, 265, 350, 142]);
+});
+
+test('leaving stage keeps the window order and re-derives the tree', () => {
+    const h = harness(gapped);
+    const windows = addWindows(h, 3);
+    fireShortcut(h, 'Layout Stage', windows[0]);
+    fireShortcut(h, 'Layout Master', windows[0]);
+    assert.deepEqual(windows.map(rectOf), layoutRects.master[3]);
+
+    h.activate(windows[1]);
+    fireShortcut(h, 'Layout Stage', windows[1]);
+    assert.deepEqual(rectOf(windows[1]), stageRects[3][0]);
+    h.activate(windows[2]);
+    fireShortcut(h, 'Layout Columns', windows[2]);
+    // After the promotion the order is focus w2, then the cells: w0, w1.
+    const order = [2, 0, 1].map(index => rectOf(windows[index]));
+    assert.deepEqual(order, layoutRects.columns[3]);
+});
+
+test('entering stage makes the active window the focus and keeps the others in order', () => {
+    const h = harness(gapped);
+    const windows = addWindows(h, 4);
+    h.activate(windows[2]);
+    fireShortcut(h, 'Layout Stage', windows[2]);
+    const rects = stageRects[5];
+    assert.deepEqual(rectOf(windows[2]), rects[0]);
+    assert.deepEqual([0, 1, 3].map(index => rectOf(windows[index])), [rects[1], rects[2],
+        rects[3]]);
+});
+
+test('stage and tree contexts are independent per output and desktop', () => {
+    const h = harness(gapped);
+    const left = addWindows(h, 3);
+    const right = [makeWindow('r0', {output: 'DP-2'}), makeWindow('r1', {output: 'DP-2'}),
+        makeWindow('r2', {output: 'DP-2'})];
+    right.forEach(window => h.add(window));
+    fireShortcut(h, 'Layout Stage', left[0]);
+    assert.deepEqual(left.map(rectOf), stageRects[3]);
+    assert.deepEqual(right.map(rectOf), layoutRects.master[3]);
+    h.activate(right[2]);
+    assert.deepEqual(left.map(rectOf), stageRects[3]);
+    assert.deepEqual(right.map(rectOf), layoutRects.master[3]);
+    h.workspace.desktops['DP-1'] = 3;
+    const other = makeWindow('other');
+    h.add(other);
+    assert.deepEqual(rectOf(other), layoutRects.master[1][0]);
+    assert.deepEqual(left.map(rectOf), stageRects[3]);
+});
+
+test('a window moved to another output joins that stage in a rail cell', () => {
+    const h = harness(stageSettings);
+    const left = addWindows(h, 3);
+    const right = [makeWindow('r0', {output: 'DP-2'})];
+    h.add(right[0]);
+    left[2].output = 'DP-2';
+    left[2].outputChanged.emit();
+    assert.deepEqual(rectOf(left[0]), stageRects[2][0]);
+    assert.deepEqual(rectOf(left[1]), stageRects[2][1]);
+    assert.deepEqual(rectOf(right[0]), stageRects[2][0]);
+    assert.deepEqual(rectOf(left[2]), stageRects[2][1]);
+});
+
+test('floating a stage window and tiling it again keeps the others in their cells', () => {
+    const h = harness(stageSettings);
+    const windows = addWindows(h, 3);
+    fireShortcut(h, 'Toggle Float', windows[1]);
+    assert.deepEqual(rectOf(windows[2]), stageRects[3][2]);
+    fireShortcut(h, 'Toggle Float', windows[1]);
+    assert.deepEqual(windows.map(rectOf), stageRects[3]);
+});
+
+test('stage layout switches log the layout line and promotions log the focus line', () => {
+    const h = harness(Object.assign({logLevel: 'info'}, gapped));
+    const windows = addWindows(h, 3);
+    fireShortcut(h, 'Layout Stage', windows[0]);
+    h.activate(windows[2]);
+    fireShortcut(h, 'Stage Cycle Next', windows[2]);
+    const lines = h.logs.filter(line => /layout |stage /.test(line));
+    assert.deepEqual(lines, [
+        'weave layout ["DP-1",2] -> stage',
+        'weave stage ["DP-1",2] focus -> w2',
+        'weave stage ["DP-1",2] focus -> w1'
+    ]);
+});
+
+test('stage windows are saved as tiled records', () => {
+    const h = harness(Object.assign({settleSeconds: 0}, stageSettings),
+        {dbus: {reply: '{}'}});
+    addWindows(h, 3);
+    h.advance(2000);
+    const calls = h.dbusCalls.filter(call => call.method === 'Set');
+    const records = JSON.parse(calls[calls.length - 1].args[0]).records;
+    assert.equal(records.length, 3);
+    records.forEach(record => assert.equal(record.mode, 'tiled'));
+});
+
+test('stage never assigns geometry in a loop: activation and cycling write once per window', () => {
+    const h = harness(stageSettings);
+    const windows = addWindows(h, 7);
+    let writes = totalWrites(windows);
+    h.activate(windows[5]);
+    assert.equal(totalWrites(windows) - writes, 7);
+    writes = totalWrites(windows);
+    fireShortcut(h, 'Stage Cycle Next', windows[5]);
+    assert.equal(totalWrites(windows) - writes, 7);
+    writes = totalWrites(windows);
+    windows.forEach(window => window.frameGeometryChanged.emit());
+    assert.equal(totalWrites(windows), writes);
 });

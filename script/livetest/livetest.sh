@@ -93,6 +93,11 @@ if [ "$DRY_RUN" = true ]; then
     say "DRY-RUN: activate-live.js x3 (known order); invoke Weave Arrange Next; check-s8a.js"
     say "DRY-RUN: move-s8.js; invoke Weave Arrange Reapply; check-s8b.js"
     say "DRY-RUN: invoke Weave Arrange Release; check-s8c.js"
+    say "DRY-RUN: invoke Weave Layout Master; order-s7.js; activate-live.js x1 (index 0)"
+    say "DRY-RUN: invoke Weave Layout Stage; check-s9a.js (focus and rail cells)"
+    say "DRY-RUN: activate-live.js (index 2); check-s9b.js (promoted, others stay)"
+    say "DRY-RUN: invoke Weave Stage Cycle Next; check-s9c.js"
+    say "DRY-RUN: invoke Weave Layout Master; check-s9d.js (stage order, master rects)"
     say "DRY-RUN: journalctl result parsing, summary table, optional JSON array"
     say "DRY-RUN: kill <recorded PID> and wait <recorded PID> for each launch"
     say "DRY-RUN: disable/remove Weave, delete four harness config keys, reconfigure"
@@ -220,7 +225,7 @@ run_script() {
     else
         cat "$TMP_DIR/check-prefix.js" > "$TMP_DIR/$name.js"
         case "$source_file" in
-            check-s7*|check-s8*|activate-live.js|move-s8.js)
+            check-s7*|check-s8*|check-s9*|activate-live.js|move-s8.js)
                 printf '%s\n' "$LIVE_PRE" >> "$TMP_DIR/$name.js" ;;
         esac
         cat "$JS_DIR/$source_file" >> "$TMP_DIR/$name.js"
@@ -271,7 +276,7 @@ snapshot_first_size() {
     [ -n "$S5_WIDTH" ] && [ -n "$S5_HEIGHT" ]
 }
 
-SCENARIOS="S1 S2 S3 S4 S5 S6 S7a S7b S7c S7d S8a S8b S8c"
+SCENARIOS="S1 S2 S3 S4 S5 S6 S7a S7b S7c S7d S8a S8b S8c S9a S9b S9c S9d"
 
 summary() {
     statuses=
@@ -296,7 +301,7 @@ summary() {
         node -e 'const fs=require("fs");const rows=fs.readFileSync(process.argv[1],"utf8")
             .trim().split(/\n/).filter(Boolean).map(x=>JSON.parse(x.slice(11)));
             const keep={};rows.forEach(x=>{
-                if(/^S[1-8][a-d]?$/.test(x.scenario))keep[x.scenario]=x;});
+                if(/^S[1-9][a-d]?$/.test(x.scenario))keep[x.scenario]=x;});
             process.stdout.write(JSON.stringify(Object.keys(keep).sort().map(k=>keep[k]))+"\n");' \
             "$TMP_DIR/results"
     fi
@@ -384,6 +389,39 @@ LIVE_PRE="var liveIds = [$live_js];"
 invoke "Weave Arrange Release"
 sleep 0.7
 run_script check-s8c.js weave-live-check-s8c S8c
+
+# S9: the Stage layout. The window order is taken again, because Release above
+# rejoined the windows in its own order; the first window is made active so that
+# it becomes the focus when Stage is entered.
+LIVE_PRE=
+invoke "Weave Layout Master"
+sleep 1
+LAST_STEP_LINE=
+run_script order-s7.js weave-live-order-s9 ''
+LIVE_IDS=${LAST_STEP_LINE#WEAVE_LIVE_STEP ids }
+live_js=
+for live_id in $LIVE_IDS; do
+    [ -z "$live_js" ] && live_js="\"$live_id\"" || live_js="$live_js,\"$live_id\""
+done
+say "S9 window order (master layout): $LIVE_IDS"
+LIVE_PRE="var liveIds = [$live_js]; var activateIndex = 0;"
+run_script activate-live.js weave-live-activate-s9-0 ''
+sleep 0.5
+LIVE_PRE="var liveIds = [$live_js];"
+invoke "Weave Layout Stage"
+sleep 1
+run_script check-s9a.js weave-live-check-s9a S9a
+LIVE_PRE="var liveIds = [$live_js]; var activateIndex = 2;"
+run_script activate-live.js weave-live-activate-s9-2 ''
+sleep 1
+LIVE_PRE="var liveIds = [$live_js];"
+run_script check-s9b.js weave-live-check-s9b S9b
+invoke "Weave Stage Cycle Next"
+sleep 1
+run_script check-s9c.js weave-live-check-s9c S9c
+invoke "Weave Layout Master"
+sleep 1
+run_script check-s9d.js weave-live-check-s9d S9d
 # Let the 2 s save debounce fire before cleanup unloads the script.
 sleep 3
 summary

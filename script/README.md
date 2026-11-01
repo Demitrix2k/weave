@@ -32,19 +32,49 @@ adopted at startup or edited by a drag, resize, or dock action.
 
 ## Layouts (`defaultLayout`, default `master`)
 
-Each context (output, desktop) has a layout: `master`, `columns`, `monocle` or
-`spiral` (`stage` is reserved for a later slice and is not implemented; an
-unknown or reserved `defaultLayout` falls back to `master`). New contexts start
+Each context (output, desktop) has a layout: `master`, `columns`, `monocle`,
+`spiral` or `stage` (see below; an unknown `defaultLayout` falls back to
+`master`). New contexts start
 with `defaultLayout`; arrivals and reassignments regenerate the tree with the
 context's own generator. Shortcuts (all with empty default keys): `Weave Layout
 Next`, `Weave Layout Previous`, `Weave Layout Master`, `Weave Layout Columns`,
-`Weave Layout Monocle`, `Weave Layout Spiral`. A switch re-derives the tree from
+`Weave Layout Monocle`, `Weave Layout Spiral`, `Weave Layout Stage` (Next and Previous cycle in that
+order, stage last). A switch re-derives the tree from
 the current leaf order (so drag swaps survive), uses the same `masterRatio` and
 gaps as arrivals, clears the "user edited" state, applies the geometry and logs
 `layout <context key> -> <name>` at info level. Monocle gives every window the
 full work rectangle and raises the active window (and the newly activated one)
 when `workspace.raiseWindow` exists. A context forgets its layout once its last
 tiled window goes away.
+
+## Stage layout (`stage`, `focusRatio` default 0.6, clamped 0.3 to 0.8)
+
+One window sits large in the centre (the focus slot); the others sit in fixed
+cells in a left and right rail, smaller toward the outer edge (real resize, no
+visual scaling). Geometry comes from the core (`stage.layoutStacked`): six rail
+cells per side stay reserved, so cells never move when windows come and go; cells
+below the adapter's minimum size (140x110) overflow into a stack that shares the
+last rail cell's rectangle. Each context keeps its own stage state, built when you
+enter Stage from the current order (the active window of the context becomes the
+focus, otherwise the first); leaving re-derives a tree from the current order.
+
+- Activating (focusing) a managed window of a Stage context swaps it into the
+  focus slot (log `stage <context> focus -> <id>`); nothing else moves. Activations
+  of unmanaged or floating windows, of windows in other contexts, and the one the
+  adapter itself causes with a cycle are ignored. A new window takes the free cell
+  nearest the centre and is promoted only if KWin activates it.
+- Shortcuts (empty default keys): `Weave Stage Pin` / `Weave Stage Unpin` (the active
+  window's rail cell; it is not promoted or cycled while pinned; note that a focused
+  window has no cell, and a focus change by activation promotes first), `Weave Stage
+  Cycle Next` / `Weave Stage Cycle Previous` (core `stage.cycle`: swap the focus with
+  the first / last unpinned rail window, then activate the new focus; repeated Next
+  therefore alternates between two windows rather than visiting all of them).
+- Drag: dropping on the focus slot or on a rail cell swaps the two windows; anywhere
+  else (gaps, empty space, pinned cells) springs back. Edge resize changes only the
+  context's focus ratio (focus window: either side; rail window: its inner side;
+  other sides are ignored) and does not touch any tree.
+- Persistence: Stage windows are saved as tiled. The layout name, the cell
+  assignment, pins and the per-context focus ratio are not persisted.
 
 ## Arrangements
 

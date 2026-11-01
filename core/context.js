@@ -97,7 +97,7 @@
     function tiledLayout(ctx, area, params) {
         if (ctx.layout === 'stage') {
             const state = ctx.stage || {focus: null, cells: []};
-            return stage.layout(state, area, params).rects;
+            return stage.layoutStacked(state, area, params).rects;
         }
         return tree.layout(ctx.tree, area, params.gaps, params.minSizes);
     }

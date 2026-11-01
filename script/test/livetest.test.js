@@ -31,7 +31,8 @@ const scenarioFiles = {
 
 const liveFiles = {
     S7a: 'check-s7a.js', S7b: 'check-s7b.js', S7c: 'check-s7c.js', S7d: 'check-s7d.js',
-    S8a: 'check-s8a.js', S8b: 'check-s8b.js', S8c: 'check-s8c.js'
+    S8a: 'check-s8a.js', S8b: 'check-s8b.js', S8c: 'check-s8c.js',
+    S9a: 'check-s9a.js', S9b: 'check-s9b.js', S9c: 'check-s9c.js', S9d: 'check-s9d.js'
 };
 const movedFile = 'check-s8m.js';
 const helperFiles = ['order-s7.js', 'activate-live.js', 'move-s8.js'];
@@ -151,6 +152,21 @@ function masterOrder(ids) {
     return ids.map(id => rects[id]);
 }
 
+// The Stage steps, replayed on the core the way the harness drives the adapter.
+function stageLiveRects(scenario, ids) {
+    let state = core.stage.fromOrder(ids, ids[0]);
+    if (scenario !== 'S9a') { state = core.stage.promote(state, ids[2]); }
+    if (scenario === 'S9c' || scenario === 'S9d') { state = core.stage.cycle(state, 1); }
+    if (scenario === 'S9d') {
+        const order = core.stage.order(state);
+        const byOrder = masterOrder(order);
+        return ids.map(id => byOrder[order.indexOf(id)]);
+    }
+    const result = core.stage.layoutStacked(state, dpArea, {gaps: {outer: 8, inner: 8},
+        focusRatio: 0.6, gradient: 0.5, railCellMin: {w: 140, h: 110}});
+    return ids.map(id => result.rects[id]);
+}
+
 // Rects the live checks expect after each step, for ids in master-layout order.
 function liveRects(scenario, ids) {
     const layoutFor = name => {
@@ -162,6 +178,7 @@ function liveRects(scenario, ids) {
     if (scenario === 'S7b') { return layoutFor('monocle'); }
     if (scenario === 'S7c') { return layoutFor('spiral'); }
     if (scenario === 'S7d') { return layoutFor('master'); }
+    if (scenario.indexOf('S9') === 0) { return stageLiveRects(scenario, ids); }
     const template = templates[Object.keys(templates)[0]];
     const slots = template.slots.length;
     // Activation order 1, 2, 0: the active window 0, then 2 (the most recent).
@@ -207,7 +224,7 @@ function evaluateLive(scenario, fail, rawWindows, file, movedOk) {
     return JSON.parse(record.slice('WEAVE_LIVE '.length));
 }
 
-test('S7 and S8 live checks pass on the right geometry and fail on a nudge', () => {
+test('S7, S8 and S9 live checks pass on the right geometry and fail on a nudge', () => {
     Object.keys(liveFiles).forEach(scenario => {
         const good = evaluateLive(scenario, false);
         assert.equal(good.scenario, scenario);
@@ -266,5 +283,81 @@ test('the harness runs every new scenario and only Weave shortcuts', () => {
         assert.ok(source.includes('invoke "Weave ' + name + '"'), name));
     const shortcuts = source.match(/invoke "[^"]*"/g) || [];
     shortcuts.forEach(call => assert.match(call, /^invoke "Weave /));
-    assert.match(source, /S7a S7b S7c S7d S8a S8b S8c/);
+    assert.match(source, /S7a S7b S7c S7d S8a S8b S8c S9a S9b S9c S9d/);
+    ['Layout Stage', 'Stage Cycle Next'].forEach(name =>
+        assert.ok(source.includes('invoke "Weave ' + name + '"'), name));
+});
+
+test('S9 expectations use the same Stage constants as the adapter', () => {
+    const adapter = fs.readFileSync(path.resolve(__dirname, '../src/adapter.js'), 'utf8');
+    const live = fs.readFileSync(path.resolve(__dirname,
+        '../livetest/js/expected.js'), 'utf8');
+    ['STAGE_GRADIENT = 0.5', 'STAGE_RAIL_MIN = {w: 140, h: 110}'].forEach(text => {
+        assert.ok(adapter.includes(text), text);
+        assert.ok(live.includes(text), text);
+    });
+    assert.match(adapter, /focusRatio", 0\.6/);
+    assert.ok(live.includes('FOCUS_RATIO = 0.6'));
+});
+
+test('S9 checks fail when the focus window is not the promoted one', () => {
+    const ids = ['{a}', '{b}', '{c}'];
+    const wrong = stageLiveRects('S9a', ids);
+    const windows = ids.map((id, index) => ({
+        resourceClass: expected.resourceClass, internalId: id, desktop: 1,
+        output: {name: 'DP-1'}, frameGeometry: Object.assign({}, wrong[index])
+    }));
+    const lines = [];
+    expected.output = line => lines.push(line);
+    vm.runInNewContext(fs.readFileSync(path.resolve(__dirname,
+        '../livetest/js/check-s9b.js'), 'utf8'), {
+        Weave: core, KWin: {PlacementArea: 0}, JSON, Math, String, Object, liveIds: ids,
+        workspace: {screens: [{name: 'DP-1'}], windowList: () => windows,
+            clientArea: () => dpArea}
+    });
+    expected.output = null;
+    assert.equal(JSON.parse(lines[0].slice('WEAVE_LIVE '.length)).status, 'FAIL');
+});
+
+function stageWindows(scenario, limits) {
+    const ids = ['{a}', '{b}', '{c}'];
+    const rects = stageLiveRects(scenario, ids);
+    return {ids, windows: ids.map((id, index) => Object.assign({
+        resourceClass: expected.resourceClass, internalId: id, desktop: 1,
+        output: {name: 'DP-1'}, frameGeometry: Object.assign({}, rects[index])
+    }, limits))};
+}
+
+function runS9(scenario, windows, ids) {
+    const lines = [];
+    expected.output = line => lines.push(line);
+    vm.runInNewContext(fs.readFileSync(path.resolve(__dirname,
+        '../livetest/js/check-s' + scenario.slice(1).toLowerCase() + '.js'), 'utf8'), {
+        Weave: core, KWin: {PlacementArea: 0}, JSON, Math, String, Object, liveIds: ids,
+        workspace: {screens: [{name: 'DP-1'}], windowList: () => windows,
+            clientArea: () => dpArea}
+    });
+    expected.output = null;
+    return JSON.parse(lines[0].slice('WEAVE_LIVE '.length));
+}
+
+test('S9 compares rail sizes only where the app can be that small', () => {
+    const limits = {minSize: {width: 100, height: 100}, maxSize: {width: 9999, height: 9999}};
+    const exact = stageWindows('S9a', limits);
+    assert.equal(runS9('S9a', exact.windows, exact.ids).status, 'PASS');
+    const wider = stageWindows('S9a', limits);
+    wider.windows[1].frameGeometry.width += 1;
+    assert.equal(runS9('S9a', wider.windows, wider.ids).status, 'FAIL');
+    const tall = {minSize: {width: 250, height: 341}, maxSize: {width: 9999, height: 9999}};
+    const clamped = stageWindows('S9a', tall);
+    clamped.windows[1].frameGeometry.width = 250;
+    clamped.windows[1].frameGeometry.height = 341;
+    const result = runS9('S9a', clamped.windows, clamped.ids);
+    assert.equal(result.status, 'PASS');
+    assert.deepEqual(result.info.sizeChecked, [true, false, false]);
+    clamped.windows[1].frameGeometry.x += 1;
+    assert.equal(runS9('S9a', clamped.windows, clamped.ids).status, 'FAIL');
+    clamped.windows[1].frameGeometry.x -= 1;
+    clamped.windows[0].frameGeometry.width -= 1;
+    assert.equal(runS9('S9a', clamped.windows, clamped.ids).status, 'FAIL');
 });

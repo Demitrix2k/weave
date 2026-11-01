@@ -26,8 +26,17 @@ its private event queue changes when recording or consuming expectations.
   RESERVED_LAYOUTS (`stage`), validLayout(name), generate(name, list,
   {masterRatio, nMaster}) (unknown names fall back to master-stack),
   cycleLayout(name, step) and leafOrder(tree) (window IDs, first child first).
-- stage: addWindow, removeWindow, promote, cycle, pin, unpin, layout.
-  State-changing functions take (state, id), cycle takes (state, direction).
+- stage: addWindow, removeWindow, promote, cycle, pin, unpin, swap, layout,
+  layoutStacked, order, fromOrder, focusRatioForEdge. State-changing functions
+  take (state, id), cycle takes (state, direction), swap takes two IDs (focus or
+  rail; it does nothing when either cell is pinned). order(state) is the focus ID
+  then the rail IDs by cell; fromOrder(ids, focus) is its inverse (the focus ID,
+  default the first, then the rest in order via addWindow). layoutStacked is layout
+  plus overflow windows sharing the rectangle of the last rail cell that has one
+  (`anchor`); layoutContext uses it. focusRatioForEdge(workArea, gaps, where,
+  coord) is the unclamped focus ratio implied by a dragged edge (where: focus-left,
+  focus-right, left-rail, right-rail).
+- tree also has CYCLE_LAYOUTS (LAYOUTS then stage), validAnyLayout, cycleAnyLayout.
 - arrangement: validateTemplate returns boolean; applyTemplate returns rectangles
   in slot order; assign returns {slots: window IDs or null, unfilled: indices,
   overflow: excess IDs}. Templates are {slots: [{x,y,w,h}]}. pickWindows(activeId,
@@ -88,8 +97,8 @@ its private event queue changes when recording or consuming expectations.
 - Context layout is explicit, with no automatic window-count switching. Groups
   use inline templates and ordered assignments. Transitions remove old membership
   and use the first group vacancy; floating geometry is remembered independently.
-  layoutContext returns only rectangles, so Stage overflow remains available via
-  stage.layout for the caller. Records use stageCell as adapter metadata; changing
+  layoutContext returns only rectangles; Stage overflow windows get the stack
+  rectangle (layoutStacked), and stage.layout still reports them separately. Records use stageCell as adapter metadata; changing
   mode clears it. Multiple groups are independent and may occupy the same area.
 - ExpectedGeometry queues multiple pending writes, allowing out-of-order events;
   unmatched events do not erase expectations. clear explicitly discards stale IDs.

@@ -224,6 +224,101 @@
         return {rects, overflow};
     }
 
-    const api = {addWindow, removeWindow, promote, cycle, pin, unpin, layout};
+    // Window IDs in a stable order: focus first, then rail cells by index, left first.
+    function order(state) {
+        const ids = state.focus === null ? [] : [state.focus];
+        ordered(state).forEach(cell => {
+            if (cell.window !== null) {
+                ids.push(cell.window);
+            }
+        });
+        return ids;
+    }
+
+    // Builds a state from an ID order: the focus ID (default the first) takes the
+    // focus slot, the rest fill the rail cells nearest the centre in order.
+    function fromOrder(ids, focus) {
+        let state = {focus: null, cells: []};
+        if (!ids.length) {
+            return state;
+        }
+        const head = ids.indexOf(focus) >= 0 ? focus : ids[0];
+        state = addWindow(state, head);
+        ids.forEach(id => {
+            if (id !== head) {
+                state = addWindow(state, id);
+            }
+        });
+        return state;
+    }
+
+    function assignSlot(result, cell, id) {
+        if (cell === null) {
+            result.focus = id;
+        } else {
+            cell.window = id;
+        }
+    }
+
+    // Exchanges the slots of two windows (focus or rail cell). Pinned cells stay.
+    function swap(state, first, second) {
+        const result = copy(state);
+        const cellOf = id => result.cells.find(cell => cell.window === id) || null;
+        const slotOf = id => result.focus === id ? null : cellOf(id);
+        const known = id => result.focus === id || cellOf(id) !== null;
+        if (first === second || !known(first) || !known(second)) {
+            return result;
+        }
+        const firstSlot = slotOf(first);
+        const secondSlot = slotOf(second);
+        if ((firstSlot && firstSlot.pinned) || (secondSlot && secondSlot.pinned)) {
+            return result;
+        }
+        assignSlot(result, firstSlot, second);
+        assignSlot(result, secondSlot, first);
+        return result;
+    }
+
+    function lastPlacedRailWindow(state, rects) {
+        const placed = ordered(state).filter(cell =>
+            cell.window !== null && rects[cell.window] !== undefined);
+        return placed.length ? placed[placed.length - 1].window : null;
+    }
+
+    // Like layout, but overflow windows share the rectangle of the last rail cell
+    // that has one (the stack); anchor is that cell's window, or null.
+    function layoutStacked(state, workArea, params) {
+        const result = layout(state, workArea, params);
+        const anchor = lastPlacedRailWindow(state, result.rects);
+        const rects = Object.assign({}, result.rects);
+        if (anchor !== null) {
+            result.overflow.forEach(id => { rects[id] = rects[anchor]; });
+        }
+        return {rects, overflow: result.overflow, anchor};
+    }
+
+    // Focus ratio (not clamped) implied by an edge dragged to coord. where: 'focus-left' and
+    // 'focus-right' are the focus window's own sides, 'left-rail' is the inner
+    // (right) side of a left rail window, 'right-rail' the inner side of a right one.
+    function focusRatioForEdge(workArea, gaps, where, coord) {
+        gaps = gaps || {};
+        const rect = g.workRect(workArea, gaps);
+        const gap = Math.min(Math.max(0, gaps.inner || 0), Math.floor(rect.width / 2));
+        const available = rect.width - 2 * gap;
+        const centre = rect.x + rect.width / 2;
+        const half = {
+            'focus-left': centre - coord,
+            'focus-right': coord - centre,
+            'left-rail': centre - (coord + gap),
+            'right-rail': coord - gap - centre
+        }[where];
+        if (half === undefined || available <= 0) {
+            return null;
+        }
+        return 2 * half / available;
+    }
+
+    const api = {addWindow, removeWindow, promote, cycle, pin, unpin, layout,
+        order, fromOrder, swap, layoutStacked, focusRatioForEdge};
     return Object.assign({}, api, {stage: api});
 });

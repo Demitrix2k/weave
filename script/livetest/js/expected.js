@@ -309,6 +309,82 @@ var KCALC_RESOURCE_CLASS = "org.kde.kcalc";
         return pass;
     }
 
+    // Must equal the adapter's Stage constants (a unit test compares the source).
+    var STAGE_GRADIENT = 0.5;
+    var STAGE_RAIL_MIN = {w: 140, h: 110};
+    var FOCUS_RATIO = 0.6;
+
+    // Replays the operations the harness applied before each S9 step on the core.
+    function stageState(scenario, ids) {
+        var stage = coreApi.stage;
+        var state = stage.fromOrder(ids, ids[0]);
+        if (scenario !== "S9a") { state = stage.promote(state, ids[2]); }
+        if (scenario === "S9c" || scenario === "S9d") { state = stage.cycle(state, 1); }
+        return state;
+    }
+
+    function stageRects(state, ids, area) {
+        var result = coreApi.stage.layoutStacked(state, area, {gaps: GAPS,
+            focusRatio: FOCUS_RATIO, gradient: STAGE_GRADIENT,
+            railCellMin: STAGE_RAIL_MIN});
+        return ids.map(function (id) { return rounded(result.rects[id]); });
+    }
+
+    // S9d: back in master, the windows are in stage order (focus, then the cells).
+    function masterRectsFor(order, ids, area) {
+        var tiled = layoutRects("master", order, area);
+        return ids.map(function (id) { return tiled[order.indexOf(id)]; });
+    }
+
+    function sizePair(value) {
+        return value ? {w: Math.round(value.width), h: Math.round(value.height)} : null;
+    }
+
+    // The window's own size limits, when KWin exposes them.
+    function limitsOf(window) {
+        return {min: sizePair(window.minSize), max: sizePair(window.maxSize)};
+    }
+
+    // An app that cannot be as small as a rail cell (kcalc has a minimum size)
+    // gets whatever size it can; only its origin is then compared. The focus
+    // window is always compared exactly.
+    function sizeFeasible(rect, limits, isFocus) {
+        if (isFocus) { return true; }
+        if (!limits.min) { return false; }
+        var inMin = rect.width >= limits.min.w && rect.height >= limits.min.h;
+        var inMax = !limits.max || (rect.width <= limits.max.w &&
+            rect.height <= limits.max.h);
+        return inMin && inMax;
+    }
+
+    function sameStageRect(want, have, feasible) {
+        if (want.x !== have.x || want.y !== have.y) { return false; }
+        return !feasible || (want.width === have.width && want.height === have.height);
+    }
+
+    function stageStep(scenario, context) {
+        var actualRects = context.windows.map(actual);
+        if (context.ids.length !== 3) {
+            emit(scenario, false, [], actualRects, {error: "needs three windows"});
+            return false;
+        }
+        var state = stageState(scenario, context.ids);
+        var expected = scenario === "S9d" ?
+            masterRectsFor(coreApi.stage.order(state), context.ids, context.area) :
+            stageRects(state, context.ids, context.area);
+        var limits = context.windows.map(limitsOf);
+        var checked = context.ids.map(function (id, index) {
+            return scenario === "S9d" || sizeFeasible(expected[index], limits[index],
+                id === state.focus);
+        });
+        var pass = expected.every(function (rect, index) {
+            return sameStageRect(rect, actualRects[index], checked[index]);
+        });
+        emit(scenario, pass, expected, actualRects, {focus: state.focus,
+            order: coreApi.stage.order(state), sizeChecked: checked, limits: limits});
+        return pass;
+    }
+
     function runLive(scenario, targetWorkspace, ids, engine, templates, movedOk) {
         coreApi = engine || coreApi;
         var context = liveContext(targetWorkspace, ids || []);
@@ -320,6 +396,8 @@ var KCALC_RESOURCE_CLASS = "org.kde.kcalc";
                 {error: "precondition: window was not displaced"});
         } else if (!context) {
             emit(scenario, false, [], [], {error: "windows missing"});
+        } else if (scenario.indexOf("S9") === 0) {
+            pass = stageStep(scenario, context);
         } else if (scenario.indexOf("S7") === 0) {
             pass = layoutStep(scenario, context, targetWorkspace);
         } else {
