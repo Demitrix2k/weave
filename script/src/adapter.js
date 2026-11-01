@@ -136,12 +136,17 @@
         return roundedRect(area);
     }
 
+    function parseList(text) {
+        return String(text).split(",").map(function (value) {
+            return value.trim();
+        }).filter(function (value) { return value.length > 0; });
+    }
+
     function loadConfig() {
-        var classes = String(readConfigValue("manageClasses", ""));
         config = {
-            manageClasses: classes.split(",").map(function (value) {
-                return value.trim();
-            }).filter(function (value) { return value.length > 0; }),
+            manageClasses: parseList(readConfigValue("manageClasses", "")),
+            tileClasses: parseList(readConfigValue("tileClasses", "")),
+            defaultMode: String(readConfigValue("defaultMode", "tiled")).trim(),
             gapInner: Math.max(0, Number(readConfigValue("gapInner", 8)) || 0),
             gapOuter: Math.max(0, Number(readConfigValue("gapOuter", 8)) || 0),
             settleSeconds: Math.max(0, Math.floor(Number(
@@ -158,6 +163,7 @@
         config.focusRatio = clampFocusRatio(config.focusRatio, 0.6);
         config.resizeStep = clampResizeStep(config.resizeStep);
         if (!api.tree.validAnyLayout(config.defaultLayout)) { config.defaultLayout = "master"; }
+        if (config.defaultMode !== "float") { config.defaultMode = "tiled"; }
         if (["off", "info", "debug"].indexOf(config.logLevel) < 0) {
             config.logLevel = "off";
         }
@@ -189,12 +195,25 @@
         return value === true || value === "true" || value === 1;
     }
 
+    // "*" manages every class, "!name" excludes one, other names are exact.
+    function manages(cls) {
+        var list = config.manageClasses;
+        if (list.indexOf("!" + cls) >= 0) { return false; }
+        return list.indexOf("*") >= 0 || list.indexOf(cls) >= 0;
+    }
+
+    // The mode a window without saved state starts in.
+    function arrivalMode(window) {
+        var cls = String(property(window, "resourceClass") || "");
+        return config.tileClasses.indexOf(cls) >= 0 ? "tiled" : config.defaultMode;
+    }
+
     function eligible(window) {
         var cls = String(property(window, "resourceClass") || "");
         var caption = String(property(window, "caption") || "");
         var dialog = property(window, "dialog") === true ||
             property(window, "windowType") === "dialog";
-        return config.manageClasses.indexOf(cls) >= 0 && cls.length > 0 &&
+        return cls.length > 0 && manages(cls) &&
             caption.length > 0 && property(window, "normalWindow") === true &&
             !property(window, "fullScreen") && !dialog &&
             !property(window, "transientFor");
@@ -269,6 +288,7 @@
         var id = windowId(window);
         var state = states.get(id);
         if (state) { state.expected.record(id, rect); }
+        log("debug", "geometry " + id + " " + JSON.stringify(rect));
         window.frameGeometry = rect;
     }
 
@@ -523,7 +543,8 @@
             group.windows.forEach(function (window) {
                 var id = windowId(window);
                 var record = saved.matches[id];
-                if (record && record.mode === "float") { floats.push(window); return; }
+                var mode = record ? record.mode : arrivalMode(window);
+                if (mode === "float") { floats.push(window); return; }
                 rest.push(window);
                 rects[id] = group.rects[id];
             });
@@ -535,8 +556,12 @@
                 context.adopted = true;
                 adoptWindows(rest, context, "tiled", saved.matches);
             }
+            if (!inferred && config.defaultMode === "float") {
+                // no clean partition: keep them managed, floating where they are
+                adoptWindows(rest, context, "float", saved.matches);
+            }
             adoptWindows(floats, context, "float", saved.matches);
-            if (!inferred) { discardIfEmpty(context); }
+            if (!context.ids.length) { discardIfEmpty(context); }
             log("info", "adopted " + context.ids.length + " windows in " + context.key);
         });
     }
@@ -561,14 +586,17 @@
         var id = windowId(window);
         if (id === null || states.has(id)) { return; }
         var context = contextFor(window);
-        var state = newState(window, context, "tiled", null);
+        var mode = arrivalMode(window);
+        var state = newState(window, context, mode, null);
         states.set(id, state);
-        joinTiling(context, id);
+        if (mode === "tiled") { joinTiling(context, id); }
         watchWindow(state);
-        applyContext(context);
+        // a floating arrival is registered but never moved
+        if (mode === "tiled") { applyContext(context); }
+        else { discardIfEmpty(context); }
         forgetClosed(window);
         scheduleSave();
-        log("info", "managed " + id + " in " + context.key);
+        log("info", "managed " + id + " in " + context.key + (mode === "tiled" ? "" : " float"));
     }
 
     function joinTiling(context, id) {
@@ -629,12 +657,20 @@
         scheduleSave();
     }
 
+    // A floating window may hold a context object that was discarded and rebuilt since.
+    function liveContext(context) {
+        var existing = contexts.get(context.key);
+        if (existing) { return existing; }
+        contexts.set(context.key, context);
+        return context;
+    }
+
     function tiling(state) {
         if (state.mode === "tiled") { applyContext(state.context); return; }
+        state.context = liveContext(state.context);
         state.floatGeometry = roundedRect(property(state.window, "frameGeometry"));
         state.floatWorkArea = workArea(state.context);
         state.mode = "tiled";
-        contexts.set(state.context.key, state.context);
         state.context.ids.push(state.id);
         rebuild(state.context);
         applyContext(state.context);
@@ -729,6 +765,7 @@
             }
             discardIfEmpty(previous);
             state.context = next;
+            if (state.mode === "float") { discardIfEmpty(next); }
             if (state.mode === "tiled") {
                 next.ids = next.ids.filter(function (id) { return id !== state.id; });
                 next.ids.push(state.id);
@@ -745,6 +782,7 @@
     function finishDrag(state) {
         var drag = state.drag;
         state.drag = null;
+        if (state.mode === "float") { rememberFloat(state); }
         if (!drag || state.mode !== "tiled") { return; }
         if (drag.move && !drag.resize) {
             var point = property(workspace, "cursorPos");
@@ -778,6 +816,15 @@
             if (stageLayout(state.context)) { resizeStage(state, drag); }
             else { resizeByFrame(state, drag); }
         }
+    }
+
+    // A free move or resize only updates the rectangle restored on the next float.
+    function rememberFloat(state) {
+        var rect = roundedRect(property(state.window, "frameGeometry"));
+        if (!rect) { return; }
+        state.floatGeometry = rect;
+        state.floatWorkArea = workArea(state.context);
+        scheduleSave();
     }
 
     // Applies a new stage state; every change of the focus window is logged.
@@ -1417,7 +1464,7 @@
         settleEvent();
         loadConfig();
         Array.from(states.values()).forEach(function (state) {
-            if (config.manageClasses.indexOf(String(property(state.window, "resourceClass"))) < 0) {
+            if (!manages(String(property(state.window, "resourceClass") || ""))) {
                 removeWindow(state.window);
             }
         });

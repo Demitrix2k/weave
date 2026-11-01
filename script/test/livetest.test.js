@@ -416,3 +416,102 @@ test('S9 compares rail sizes only where the app can be that small', () => {
     clamped.windows[0].frameGeometry.width -= 1;
     assert.equal(runS9('S9a', clamped.windows, clamped.ids).status, 'FAIL');
 });
+
+// S11: float-first. Fake windows at free rectangles, one snapped, tiled and restored.
+const freeRects = {
+    '{a}': {x: 300, y: 200, width: 250, height: 340},
+    '{b}': {x: 700, y: 300, width: 250, height: 340},
+    '{c}': {x: 1100, y: 400, width: 250, height: 340}
+};
+const counts = {geometry: 0, managed: 3};
+
+function runS11(scenario, rects, options = {}) {
+    const ids = Object.keys(freeRects);
+    const windows = ids.map(id => ({
+        resourceClass: expected.resourceClass, internalId: id, desktop: 1,
+        output: {name: 'DP-1'}, frameGeometry: Object.assign({}, rects[id])
+    }));
+    const lines = [];
+    expected.output = line => lines.push(line);
+    vm.runInNewContext(fs.readFileSync(path.resolve(__dirname,
+        '../livetest/js/check-s11' + scenario.slice(3) + '.js'), 'utf8'), {
+        Weave: core, KWin: {PlacementArea: 0}, JSON, Math, String, Object,
+        seenRects: freeRects, weaveCounts: options.counts || counts,
+        KCALC_RESOURCE_CLASS: expected.resourceClass,
+        workspace: {screens: [{name: 'DP-1'}], windowList: () => windows,
+            activeWindow: windows[0], clientArea: () => dpArea}
+    });
+    expected.output = null;
+    return JSON.parse(lines[0].slice('WEAVE_LIVE '.length));
+}
+
+function withFirst(rect) {
+    return Object.assign({}, freeRects, {'{a}': rect});
+}
+
+test('S11a passes only when nothing moved, nothing was tiled and Weave wrote nothing', () => {
+    assert.equal(runS11('S11a', freeRects).status, 'PASS');
+    assert.equal(runS11('S11a', withFirst({x: 301, y: 200, width: 250, height: 340})).status,
+        'FAIL');
+    assert.equal(runS11('S11a', freeRects, {counts: {geometry: 1, managed: 3}}).status,
+        'FAIL');
+    assert.equal(runS11('S11a', freeRects, {counts: {geometry: 0, managed: 2}}).status,
+        'FAIL');
+    const ids = Object.keys(freeRects);
+    const tiled = core.tree.layout(core.tree.masterStack(ids, 1, 0.6), dpArea, gaps);
+    assert.equal(runS11('S11a', tiled).status, 'FAIL');
+});
+
+test('S11b to S11d expect the left half, the filled work area and the left half again', () => {
+    const half = core.snap.snapRect('leftHalf', dpArea, gaps);
+    const fill = core.tree.layout(core.tree.masterStack(['{a}'], 1, 0.6), dpArea, gaps)['{a}'];
+    [['S11b', half], ['S11c', fill], ['S11d', half]].forEach(([scenario, rect]) => {
+        assert.equal(runS11(scenario, withFirst(rect)).status, 'PASS', scenario);
+        const off = Object.assign({}, rect, {width: rect.width - 1});
+        assert.equal(runS11(scenario, withFirst(off)).status, 'FAIL', scenario);
+        const nudged = {x: 1, y: 2, width: 3, height: 4};
+        const moved = Object.assign({}, withFirst(rect), {'{b}': nudged});
+        assert.equal(runS11(scenario, moved).status, 'FAIL', scenario);
+    });
+    assert.deepEqual(fill, {x: 8, y: 40, width: 2544, height: 1384});
+});
+
+test('the harness runs S11 with defaultMode float, an empty tileClasses and Weave keys', () => {
+    const source = fs.readFileSync(path.resolve(__dirname,
+        '../livetest/livetest.sh'), 'utf8');
+    assert.match(source, /S10h S11a S11b S11c S11d/);
+    assert.match(source, /--key defaultMode float/);
+    assert.match(source, /--key tileClasses ""/);
+    ['check-s11a.js', 'check-s11b.js', 'check-s11c.js', 'check-s11d.js'].forEach(file => {
+        assert.ok(source.includes(file), file);
+        const code = fs.readFileSync(path.resolve(__dirname, '../livetest/js', file), 'utf8');
+        assert.doesNotMatch(code, /desktops\s*=|\.[\t ]*tile\b|\.(close|kill)\(/);
+    });
+    assert.ok(source.includes('invoke "Weave Snap Left Half"'));
+    assert.ok(source.includes('invoke "Weave Toggle Float"'));
+    assert.match(source, /--key defaultMode --delete/);
+    assert.match(source, /--key tileClasses --delete/);
+});
+
+test('S11 compares against the first-seen rectangles after rounding them', () => {
+    const fractional = Object.assign({}, freeRects, {'{b}': {x: 700.33, y: 299.6,
+        width: 250, height: 340}});
+    const lines = [];
+    const windows = Object.keys(fractional).map(id => ({
+        resourceClass: expected.resourceClass, internalId: id, desktop: 1,
+        output: {name: 'DP-1'},
+        frameGeometry: Object.assign({}, id === '{b}' ? freeRects[id] : fractional[id],
+            id === '{b}' ? {x: 700, y: 300} : {})
+    }));
+    expected.output = line => lines.push(line);
+    vm.runInNewContext(fs.readFileSync(path.resolve(__dirname,
+        '../livetest/js/check-s11a.js'), 'utf8'), {
+        Weave: core, KWin: {PlacementArea: 0}, JSON, Math, String, Object,
+        seenRects: fractional, weaveCounts: counts,
+        KCALC_RESOURCE_CLASS: expected.resourceClass,
+        workspace: {screens: [{name: 'DP-1'}], windowList: () => windows,
+            clientArea: () => dpArea}
+    });
+    expected.output = null;
+    assert.equal(JSON.parse(lines[0].slice('WEAVE_LIVE '.length)).status, 'PASS');
+});

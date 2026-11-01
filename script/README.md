@@ -15,9 +15,33 @@ loaded on reconfigure but only runs after `qdbus6 org.kde.KWin /Scripting start`
 disabling does not unload it (use `unloadScript weave`), so the live harness does both.
 Run all tests with `node --test core/test script/test`.
 
-`manageClasses` is a comma-separated list of exact `resourceClass` values. Only
-normal, non-dialog windows with a nonempty class and caption can be managed.
-Fullscreen windows are skipped. The adapter stores state by KWin
+`manageClasses` is a comma-separated list of exact `resourceClass` values. `*` means
+every class, and `!name` excludes one (`*,!org.kde.plasmashell`); a list of only
+exclusions manages nothing. Only normal, non-dialog windows with a nonempty class and
+caption, without `transientFor`, can be managed. Fullscreen windows are skipped.
+
+## Float first (`defaultMode`, `tileClasses`)
+
+The Rectangle-plus-Krohnkite setup: windows float and snap freely, a few classes tile.
+`defaultMode` is `tiled` (default, the behaviour before this option existed) or `float`.
+`tileClasses` is a comma-separated list of exact classes; a newly arriving window of one of
+them arrives tiled, any other managed window arrives with `defaultMode`.
+
+- A window arriving in `float` mode is registered as managed (Snap, Toggle Float, Layout,
+  Arrange, Promote, Retile, Float All work on it) but is never moved or resized on arrival.
+  Its remembered float rectangle is the rectangle it has. Toggle Float tiles it into its
+  context and the next toggle returns it to that rectangle; a free drag or resize updates
+  the remembered rectangle and never relayouts anything.
+- At startup (the observe/settle phase) nothing is moved. Windows whose class is not in
+  `tileClasses` are adopted as floating when `defaultMode` is `float`; `tileClasses` windows
+  are adopted as before (tree inferred from their rectangles). If the tiled candidates do not
+  form a clean partition, `float` mode keeps them managed and floating where they are.
+- Saved state wins for the windows it knows, both ways: a window saved as floating stays
+  floating although its class is in `tileClasses`, and one saved as tiled is adopted tiled
+  although `defaultMode` is `float`. Windows that open after the settle phase do not use
+  saved state; they follow the rule above.
+- Moving a floating window to another output or desktop only updates its context; it is not
+  moved. The adapter stores state by KWin
 `internalId`, and maintains separate master-stack trees for each output and
 that output's current desktop.
 

@@ -8,6 +8,16 @@
     <entry name="manageClasses" type="String">
       <default></default>
     </entry>
+    <entry name="defaultMode" type="String">
+      <choices>
+        <choice name="tiled"/>
+        <choice name="float"/>
+      </choices>
+      <default>tiled</default>
+    </entry>
+    <entry name="tileClasses" type="String">
+      <default></default>
+    </entry>
     <entry name="gapInner" type="Int">
       <default>8</default>
     </entry>

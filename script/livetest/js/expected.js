@@ -461,7 +461,74 @@ var KCALC_RESOURCE_CLASS = "org.kde.kcalc";
         return {scenario: scenario, status: pass ? "PASS" : "FAIL"};
     }
 
+    function seenKey(window) { return String(window.internalId); }
+
+    function sameAsSeen(window, seen) {
+        // The dump prints KWin's fractional cascade positions; frames compare rounded.
+        var was = seen[seenKey(window)];
+        return equalRect(actual(window), was ? rounded(was) : null);
+    }
+
+    function activeKcalc(workspace) {
+        var window = workspace.activeWindow;
+        return window && String(window.resourceClass) === KCALC_RESOURCE_CLASS ?
+            window : null;
+    }
+
+    // The float-first expectation for the active window after each S11 step.
+    function floatTarget(scenario, window, workspace) {
+        var area = workArea(workspace, window.output, desktopFor(workspace, window));
+        if (scenario === "S11c") {
+            var id = seenKey(window);
+            var tree = coreApi.tree.masterStack([id], 1, 0.6);
+            return rounded(coreApi.tree.layout(tree, area, GAPS)[id]);
+        }
+        return rounded(coreApi.snap.snapRect("leftHalf", area, GAPS));
+    }
+
+    // Three kcalc windows were opened with defaultMode=float: Weave must not have moved
+    // them (no geometry write in its log, same rects as when first seen, not a tiling).
+    function floatArrival(workspace, windows, seen, counts) {
+        var ids = windows.map(seenKey);
+        var tiled = tile(ids, windows.length ? workArea(workspace, windows[0].output,
+            desktopFor(workspace, windows[0])) : {x: 0, y: 0, width: 1, height: 1});
+        var current = windows.map(actual);
+        var unchanged = windows.length === 3 && windows.every(function (window) {
+            return sameAsSeen(window, seen);
+        });
+        var notTiled = !current.every(function (rect) {
+            return tiled.some(function (item) { return equalRect(item, rect); });
+        });
+        var quiet = counts.geometry === 0 && counts.managed === 3;
+        emit("S11a", unchanged && notTiled && quiet, windows.map(function (window) {
+            return seen[seenKey(window)] || null;
+        }), current, {counts: counts, notTiled: notTiled});
+        return unchanged && notTiled && quiet;
+    }
+
+    // S11b to S11d: the active window is at the snap / tiled / restored rectangle and the
+    // other windows are where they were first seen.
+    function floatStep(scenario, workspace, seen, counts, engine) {
+        coreApi = engine || coreApi;
+        var windows = kcalcWindows(workspace);
+        if (scenario === "S11a") { return floatArrival(workspace, windows, seen, counts); }
+        var active = activeKcalc(workspace);
+        if (!active) {
+            emit(scenario, false, [], windows.map(actual), {error: "no active kcalc"});
+            return false;
+        }
+        var want = floatTarget(scenario, active, workspace);
+        var others = windows.filter(function (window) { return window !== active; });
+        var othersStay = others.every(function (window) {
+            return sameAsSeen(window, seen);
+        });
+        var pass = equalRect(actual(active), want) && othersStay && windows.length === 3;
+        emit(scenario, pass, [want], [actual(active)], {othersStay: othersStay});
+        return pass;
+    }
+
     api = {
+        floatStep: floatStep,
         runLive: runLive,
         resourceClass: KCALC_RESOURCE_CLASS,
         rounded: rounded,

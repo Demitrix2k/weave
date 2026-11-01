@@ -44,6 +44,8 @@ cleanup() {
         kwriteconfig6 --file "$CONFIG" --group Script-weave --key manageClasses --delete
         kwriteconfig6 --file "$CONFIG" --group Script-weave --key settleSeconds --delete
         kwriteconfig6 --file "$CONFIG" --group Script-weave --key logLevel --delete
+        kwriteconfig6 --file "$CONFIG" --group Script-weave --key defaultMode --delete
+        kwriteconfig6 --file "$CONFIG" --group Script-weave --key tileClasses --delete
         qdbus6 org.kde.KWin /KWin reconfigure
         printf 'Remaining kcalc PIDs: '
         pgrep -x kcalc || true
@@ -105,6 +107,11 @@ if [ "$DRY_RUN" = true ]; then
     say "DRY-RUN: check-s10c.js and check-s10d.js (master edge moves by the step and back)"
     say "DRY-RUN: invoke Weave Master More / Master Fewer; check-s10e.js and check-s10f.js"
     say "DRY-RUN: invoke Weave Float All twice; check-s10g.js (floated), check-s10h.js (tiled)"
+    say "DRY-RUN: S11: stop own kcalc, set defaultMode=float tileClasses= (empty), restart script"
+    say "DRY-RUN: three new kcalc; dump rects; journal counts of weave geometry/managed lines"
+    say "DRY-RUN: check-s11a.js (not moved); select-first-kcalc.js; invoke Weave Snap Left Half;"
+    say "DRY-RUN: check-s11b.js; invoke Weave Toggle Float; check-s11c.js (tiled, fills);"
+    say "DRY-RUN: invoke Weave Toggle Float; check-s11d.js (previous rect restored)"
     say "DRY-RUN: journalctl result parsing, summary table, optional JSON array"
     say "DRY-RUN: kill <recorded PID> and wait <recorded PID> for each launch"
     say "DRY-RUN: disable/remove Weave, delete four harness config keys, reconfigure"
@@ -232,7 +239,7 @@ run_script() {
     else
         cat "$TMP_DIR/check-prefix.js" > "$TMP_DIR/$name.js"
         case "$source_file" in
-            check-s7*|check-s8*|check-s9*|check-s10*|activate-live.js|move-s8.js)
+            check-s7*|check-s8*|check-s9*|check-s10*|check-s11*|activate-live.js|move-s8.js)
                 printf '%s\n' "$LIVE_PRE" >> "$TMP_DIR/$name.js" ;;
         esac
         cat "$JS_DIR/$source_file" >> "$TMP_DIR/$name.js"
@@ -284,7 +291,7 @@ snapshot_first_size() {
 }
 
 SCENARIOS="S1 S2 S3 S4 S5 S6 S7a S7b S7c S7d S8a S8b S8c S9a S9b S9c S9d"
-SCENARIOS="$SCENARIOS S10a S10b S10c S10d S10e S10f S10g S10h"
+SCENARIOS="$SCENARIOS S10a S10b S10c S10d S10e S10f S10g S10h S11a S11b S11c S11d"
 
 summary() {
     statuses=
@@ -479,6 +486,80 @@ run_script check-s10g.js weave-live-check-s10g S10g
 invoke "Weave Float All"
 sleep 1
 run_script check-s10h.js weave-live-check-s10h S10h
+
+# S11: float first. The script restarts with defaultMode=float and no tileClasses, and
+# three new kcalc windows must stay exactly where the app put them.
+stop_kcalc() {
+    for stop_pid in $KCALC_PIDS; do kill "$stop_pid" 2>/dev/null || true; done
+    for stop_pid in $KCALC_PIDS; do wait "$stop_pid" 2>/dev/null || true; done
+    KCALC_PIDS=
+    gone_try=0
+    while pgrep -x kcalc >/dev/null 2>&1 && [ "$gone_try" -lt 20 ]; do
+        sleep 0.5
+        gone_try=$((gone_try + 1))
+    done
+    ! pgrep -x kcalc >/dev/null 2>&1
+}
+journal_count() {
+    journalctl --user --since "$1" -o cat 2>/dev/null | rg -c "$2" || true
+}
+S11_OK=true
+sleep 3
+stop_kcalc || { say "S11: kcalc did not close"; S11_OK=false; }
+if [ "$S11_OK" = true ]; then
+    qdbus6 org.kde.KWin /Scripting unloadScript weave >/dev/null 2>&1 || true
+    run kwriteconfig6 --file "$CONFIG" --group Script-weave --key defaultMode float
+    run kwriteconfig6 --file "$CONFIG" --group Script-weave --key tileClasses ""
+    S11_TS=$(date --iso-8601=seconds)
+    run qdbus6 org.kde.KWin /KWin reconfigure
+    run qdbus6 org.kde.KWin /Scripting start
+    s11_try=0
+    s11_seen=false
+    while [ "$s11_try" -lt 20 ]; do
+        if journalctl --user --since "$S11_TS" -o cat 2>/dev/null \
+                | grep -qF "weave loaded build=$BUILD_ID"; then
+            s11_seen=true
+            break
+        fi
+        sleep 0.5
+        s11_try=$((s11_try + 1))
+    done
+    [ "$s11_seen" = true ] || { say "S11: script did not restart"; S11_OK=false; }
+fi
+if [ "$S11_OK" = true ]; then
+    sleep 1
+    S11_TS=$(date --iso-8601=seconds)
+    kcalc >/dev/null 2>&1 & KCALC_PIDS="$KCALC_PIDS $!"
+    kcalc >/dev/null 2>&1 & KCALC_PIDS="$KCALC_PIDS $!"
+    kcalc >/dev/null 2>&1 & KCALC_PIDS="$KCALC_PIDS $!"
+    wait_for_three || S11_OK=false
+fi
+if [ "$S11_OK" = true ]; then
+    # Rectangles when first seen (the first poll that finds all three), then 1.5 s later.
+    dump_ts=$(date --iso-8601=seconds)
+    run_script dump.js weave-live-first-s11 ''
+    seen_js=$(journalctl --user --since "$dump_ts" -o cat 2>/dev/null | awk \
+        '$1 == "WEAVE_LIVE_WINDOW" {printf "%s\"%s\":{x:%s,y:%s,width:%s,height:%s}", \
+        (n++ ? "," : ""), $2, $5, $6, $7, $8}')
+    sleep 1.5
+    S11_GEOMETRY=$(journal_count "$S11_TS" 'weave geometry ')
+    S11_MANAGED=$(journal_count "$S11_TS" 'weave managed .* float')
+    say "S11: weave geometry lines=$S11_GEOMETRY managed float lines=$S11_MANAGED"
+    LIVE_PRE="var seenRects = {$seen_js}; var weaveCounts = {geometry: ${S11_GEOMETRY:-0},"
+    LIVE_PRE="$LIVE_PRE managed: ${S11_MANAGED:-0}};"
+    run_script check-s11a.js weave-live-check-s11a S11a
+    run_script select-first-kcalc.js weave-live-select-s11 ''
+    sleep 0.5
+    invoke "Weave Snap Left Half"
+    sleep 1
+    run_script check-s11b.js weave-live-check-s11b S11b
+    invoke "Weave Toggle Float"
+    sleep 1
+    run_script check-s11c.js weave-live-check-s11c S11c
+    invoke "Weave Toggle Float"
+    sleep 1
+    run_script check-s11d.js weave-live-check-s11d S11d
+fi
 # Let the 2 s save debounce fire before cleanup unloads the script.
 sleep 3
 summary

@@ -165,7 +165,7 @@ function harness(settings = {}, options = {}) {
         workspace.activeWindow = window;
         workspace.windowActivated.emit(window);
     }
-    return {workspace, shortcuts, logs, windows, add, remove, changed,
+    return {workspace, shortcuts, logs, windows, add, remove, changed, settings,
         advance, now: () => now, dbusCalls, quit, activate};
 }
 
@@ -2217,4 +2217,326 @@ test('keys: every action writes each window at most once and never loops', () =>
         windows.forEach(window => window.frameGeometryChanged.emit());
         assert.equal(totalWrites(windows), settled, name);
     });
+});
+
+// Float-first mode: manageClasses wildcards, defaultMode and tileClasses.
+
+function editorWindow(id, cls, options = {}) {
+    return makeWindow(id, Object.assign({resourceClass: cls, caption: 'Caption ' + id},
+        options));
+}
+
+function managed(h, window) {
+    // Snap does nothing to an unmanaged window, so a write shows that it is managed.
+    const before = window.geometryWrites;
+    fireShortcut(h, 'Snap Maximize', window);
+    return window.geometryWrites > before;
+}
+
+test('wildcard: * manages every eligible window and keeps the eligibility rules', () => {
+    const h = harness({manageClasses: '*', defaultMode: 'float'});
+    const ok = editorWindow('a', 'anything');
+    const noClass = editorWindow('b', '');
+    const noCaption = editorWindow('c', 'x', {caption: ''});
+    const dialog = editorWindow('d', 'x', {dialog: true});
+    const child = editorWindow('e', 'x', {transientFor: {}});
+    const full = editorWindow('f', 'x', {fullScreen: true});
+    const plain = editorWindow('g', 'x', {normalWindow: false});
+    const all = [ok, noClass, noCaption, dialog, child, full, plain];
+    all.forEach(window => h.add(window));
+    assert.deepEqual(all.map(window => managed(h, window)),
+        [true, false, false, false, false, false, false]);
+});
+
+test('wildcard: !name excludes a class, exact names still work, defaults stay inert', () => {
+    const star = harness({manageClasses: '* , !org.kde.plasmashell'});
+    const shell = editorWindow('a', 'org.kde.plasmashell');
+    const other = editorWindow('b', 'kate');
+    star.add(shell);
+    star.add(other);
+    assert.deepEqual(geometry(shell), {x: 0.4, y: 0.2, width: 799.6, height: 600.5});
+    assert.equal(shell.geometryWrites, 0);
+    assert.ok(other.geometryWrites > 0);
+
+    const exact = harness({manageClasses: 'kate,!kate,konsole'});
+    const kate = editorWindow('c', 'kate');
+    const konsole = editorWindow('d', 'konsole');
+    exact.add(kate);
+    exact.add(konsole);
+    assert.equal(kate.geometryWrites, 0);
+    assert.ok(konsole.geometryWrites > 0);
+
+    const onlyExclusions = harness({manageClasses: '!kate'});
+    const lone = editorWindow('e', 'konsole');
+    onlyExclusions.add(lone);
+    assert.equal(lone.geometryWrites, 0);
+
+    const inert = harness();
+    const idle = editorWindow('f', 'konsole');
+    inert.add(idle);
+    assert.equal(idle.geometryWrites, 0);
+});
+
+test('wildcard: a window turning into an excluded class is released by a config change', () => {
+    const h = harness({manageClasses: '*'});
+    const a = editorWindow('a', 'kate');
+    const b = editorWindow('b', 'kate');
+    h.add(a);
+    h.add(b);
+    h.settings.manageClasses = '*,!kate';
+    h.changed.emit();
+    const writes = a.geometryWrites;
+    fireShortcut(h, 'Snap Left Half', a);
+    assert.equal(a.geometryWrites, writes, 'no longer managed');
+});
+
+test('defaults: defaultMode tiled, empty tileClasses and an unknown mode behave as before', () => {
+    ['tiled', 'bogus', undefined].forEach(mode => {
+        const settings = {manageClasses: 'editor', gapInner: 8, gapOuter: 8};
+        if (mode !== undefined) { settings.defaultMode = mode; }
+        const h = harness(settings);
+        const a = makeWindow('a');
+        h.add(a);
+        assert.deepEqual(geometry(a), {x: 8, y: 8, width: 1184, height: 785});
+    });
+});
+
+test('float mode: arrival registers the window but never touches its geometry', () => {
+    const h = harness({manageClasses: '*', defaultMode: 'float'});
+    const start = {x: 123, y: 45, width: 640, height: 480};
+    const windows = ['a', 'b', 'c'].map(id => makeWindow(id, {frameGeometry: start}));
+    windows.forEach(window => h.add(window));
+    assert.deepEqual(windows.map(window => window.geometryWrites), [0, 0, 0]);
+    windows.forEach(window => assert.deepEqual(geometry(window), start));
+});
+
+test('float mode: Toggle Float tiles the window and the next toggle restores its rectangle', () => {
+    const h = harness({manageClasses: '*', defaultMode: 'float', gapInner: 8, gapOuter: 8});
+    const start = {x: 123, y: 45, width: 640, height: 480};
+    const a = makeWindow('a', {frameGeometry: start});
+    h.add(a);
+    fireShortcut(h, 'Toggle Float', a);
+    assert.deepEqual(geometry(a), {x: 8, y: 8, width: 1184, height: 785});
+    fireShortcut(h, 'Toggle Float', a);
+    assert.deepEqual(geometry(a), start);
+    assert.equal(a.geometryWrites, 2);
+});
+
+test('float mode: tiling one window leaves the floating ones alone and a second joins', () => {
+    const h = harness({manageClasses: '*', defaultMode: 'float', gapInner: 8, gapOuter: 8});
+    const a = makeWindow('a', {frameGeometry: {x: 100, y: 100, width: 300, height: 300}});
+    const b = makeWindow('b', {frameGeometry: {x: 500, y: 100, width: 300, height: 300}});
+    const c = makeWindow('c', {frameGeometry: {x: 300, y: 400, width: 300, height: 300}});
+    [a, b, c].forEach(window => h.add(window));
+    fireShortcut(h, 'Toggle Float', a);
+    fireShortcut(h, 'Toggle Float', b);
+    assert.deepEqual(geometry(a), {x: 8, y: 8, width: 706, height: 785});
+    assert.deepEqual(geometry(b), {x: 722, y: 8, width: 470, height: 785});
+    assert.equal(c.geometryWrites, 0);
+    fireShortcut(h, 'Toggle Float', a);
+    assert.deepEqual(geometry(a), {x: 100, y: 100, width: 300, height: 300});
+    assert.deepEqual(geometry(b), {x: 8, y: 8, width: 1184, height: 785});
+    assert.equal(c.geometryWrites, 0);
+});
+
+test('tileClasses: those classes arrive tiled and relayout, the rest arrive floating', () => {
+    const h = harness({manageClasses: '*', defaultMode: 'float', tileClasses: 'zen, vesktop',
+        gapInner: 8, gapOuter: 8});
+    const free = makeWindow('f', {resourceClass: 'kate',
+        frameGeometry: {x: 200, y: 200, width: 400, height: 300}});
+    const zen = makeWindow('z', {resourceClass: 'zen'});
+    const vesktop = makeWindow('v', {resourceClass: 'vesktop'});
+    h.add(free);
+    h.add(zen);
+    assert.deepEqual(geometry(zen), {x: 8, y: 8, width: 1184, height: 785});
+    h.add(vesktop);
+    assert.deepEqual(geometry(zen), {x: 8, y: 8, width: 706, height: 785});
+    assert.deepEqual(geometry(vesktop), {x: 722, y: 8, width: 470, height: 785});
+    assert.equal(free.geometryWrites, 0);
+    h.remove(zen);
+    assert.deepEqual(geometry(vesktop), {x: 8, y: 8, width: 1184, height: 785});
+    fireShortcut(h, 'Toggle Float', vesktop);
+    assert.equal(free.geometryWrites, 0);
+});
+
+test('tileClasses: with the default mode tiled, a tile class changes nothing', () => {
+    const h = harness({manageClasses: '*', tileClasses: 'zen', gapInner: 8, gapOuter: 8});
+    const other = makeWindow('o', {resourceClass: 'kate'});
+    h.add(other);
+    assert.deepEqual(geometry(other), {x: 8, y: 8, width: 1184, height: 785});
+});
+
+test('float mode: Snap moves a never-tiled window and the next toggle tiles it', () => {
+    const h = harness({manageClasses: '*', defaultMode: 'float', gapInner: 8, gapOuter: 8});
+    const a = makeWindow('a', {frameGeometry: {x: 300, y: 300, width: 200, height: 200}});
+    h.add(a);
+    fireShortcut(h, 'Snap Left Half', a);
+    assert.deepEqual(geometry(a), {x: 8, y: 8, width: 588, height: 785});
+    fireShortcut(h, 'Toggle Float', a);
+    assert.deepEqual(geometry(a), {x: 8, y: 8, width: 1184, height: 785});
+    fireShortcut(h, 'Toggle Float', a);
+    assert.deepEqual(geometry(a), {x: 8, y: 8, width: 588, height: 785});
+});
+
+test('float mode: Layout changes only move the tiled windows of a mixed context', () => {
+    const h = harness({manageClasses: '*', defaultMode: 'float', tileClasses: 'zen,vesktop',
+        gapInner: 8, gapOuter: 8});
+    const free = makeWindow('f', {resourceClass: 'kate',
+        frameGeometry: {x: 200, y: 200, width: 400, height: 300}});
+    const zen = makeWindow('z', {resourceClass: 'zen'});
+    const vesktop = makeWindow('v', {resourceClass: 'vesktop'});
+    [free, zen, vesktop].forEach(window => h.add(window));
+    fireShortcut(h, 'Layout Monocle', zen);
+    assert.deepEqual(geometry(vesktop), {x: 8, y: 8, width: 1184, height: 785});
+    fireShortcut(h, 'Layout Columns', zen);
+    assert.deepEqual(geometry(zen), {x: 8, y: 8, width: 588, height: 785});
+    assert.equal(free.geometryWrites, 0);
+    fireShortcut(h, 'Promote', vesktop);
+    assert.deepEqual(geometry(vesktop), {x: 8, y: 8, width: 588, height: 785});
+    assert.equal(free.geometryWrites, 0);
+});
+
+test('float mode: Arrange takes floating and tiled windows and Release returns them', () => {
+    const h = harness({manageClasses: '*', defaultMode: 'float', tileClasses: 'zen',
+        gapInner: 8, gapOuter: 8});
+    const startFree = {x: 200, y: 200, width: 400, height: 300};
+    const free = makeWindow('f', {resourceClass: 'kate', frameGeometry: startFree});
+    const zen = makeWindow('z', {resourceClass: 'zen'});
+    [free, zen].forEach(window => h.add(window));
+    h.activate(zen);
+    h.activate(free);
+    fireShortcut(h, 'Arrange Next', free);
+    assert.ok(free.geometryWrites > 0 && zen.geometryWrites > 1);
+    const zenArranged = geometry(zen);
+    assert.notDeepEqual(geometry(free), startFree);
+    fireShortcut(h, 'Arrange Release', free);
+    assert.deepEqual(geometry(free), startFree);
+    assert.notDeepEqual(geometry(zen), zenArranged);
+    assert.deepEqual(geometry(zen), {x: 8, y: 8, width: 1184, height: 785});
+});
+
+test('adoption: float mode adopts non-tile classes as floating and never moves anyone', () => {
+    const h = harness({manageClasses: '*', defaultMode: 'float', settleSeconds: 2});
+    const left = {x: 8, y: 8, width: 706, height: 785};
+    const right = {x: 722, y: 8, width: 470, height: 785};
+    const a = makeWindow('a', {frameGeometry: left});
+    const b = makeWindow('b', {frameGeometry: right});
+    const c = makeWindow('c', {frameGeometry: {x: 300, y: 300, width: 400, height: 300}});
+    [a, b, c].forEach(window => h.add(window));
+    h.advance(2000);
+    assert.deepEqual([a, b, c].map(window => window.geometryWrites), [0, 0, 0]);
+    fireShortcut(h, 'Toggle Float', a);
+    assert.deepEqual(geometry(a), {x: 8, y: 8, width: 1184, height: 785});
+    fireShortcut(h, 'Toggle Float', a);
+    assert.deepEqual(geometry(a), left);
+    assert.deepEqual(geometry(b), right);
+});
+
+test('adoption: tile classes are adopted as a tree, other classes as floating', () => {
+    const initialWindows = [
+        makeWindow('z', {resourceClass: 'zen', frameGeometry: {x: 8, y: 8, width: 706,
+            height: 785}}),
+        makeWindow('v', {resourceClass: 'vesktop', frameGeometry: {x: 722, y: 8, width: 470,
+            height: 785}}),
+        makeWindow('k', {resourceClass: 'kate', frameGeometry: {x: 300, y: 300, width: 400,
+            height: 300}})
+    ];
+    const h = harness({manageClasses: '*', defaultMode: 'float', tileClasses: 'zen,vesktop',
+        settleSeconds: 2, gapInner: 8, gapOuter: 8}, {initialWindows});
+    h.advance(2000);
+    const [zen, vesktop, kate] = initialWindows;
+    assert.deepEqual(initialWindows.map(window => window.geometryWrites), [0, 0, 0]);
+    h.remove(zen);
+    assert.deepEqual(geometry(vesktop), {x: 8, y: 8, width: 1184, height: 785});
+    assert.equal(kate.geometryWrites, 0);
+    fireShortcut(h, 'Toggle Float', kate);
+    assert.ok(kate.geometryWrites > 0, 'kate is managed');
+});
+
+test('adoption: a float-default set that is not a partition is still managed as floating', () => {
+    const initialWindows = loginWindows();
+    const h = harness({manageClasses: '*', defaultMode: 'float', settleSeconds: 1},
+        {initialWindows});
+    h.advance(1000);
+    assert.deepEqual(initialWindows.map(window => window.geometryWrites), [0, 0, 0]);
+    fireShortcut(h, 'Snap Left Half', initialWindows[2]);
+    assert.ok(initialWindows[2].geometryWrites > 0);
+});
+
+test('persistence: saved modes win over defaultMode and tileClasses', () => {
+    const tiledDefault = harness({manageClasses: 'editor', defaultMode: 'float', settleSeconds: 1,
+        gapInner: 8, gapOuter: 8}, {dbus: {reply: loginReply}});
+    const [a, b, c] = loginWindows();
+    [a, b, c].forEach(window => tiledDefault.add(window));
+    tiledDefault.advance(1000);
+    assert.deepEqual([a, b, c].map(window => window.geometryWrites), [0, 0, 0]);
+    tiledDefault.remove(a);
+    assert.ok(b.geometryWrites > 0, 'saved tiled windows were adopted into the tree');
+    assert.equal(c.geometryWrites, 0);
+
+    const floatsFirst = harness({manageClasses: 'editor', tileClasses: 'editor',
+        defaultMode: 'float', settleSeconds: 1}, {dbus: {reply: loginReply}});
+    const [d, e, f] = loginWindows();
+    [d, e, f].forEach(window => floatsFirst.add(window));
+    floatsFirst.advance(1000);
+    floatsFirst.remove(d);
+    assert.ok(e.geometryWrites > 0);
+    assert.equal(f.geometryWrites, 0, 'saved float stays floating although its class tiles');
+});
+
+test('persistence: float-mode windows are saved as float and restored as float', () => {
+    const h = harness({manageClasses: '*', defaultMode: 'float', settleSeconds: 0},
+        {dbus: {reply: '{}'}});
+    const a = makeWindow('a', {caption: 'Alpha',
+        frameGeometry: {x: 50, y: 60, width: 300, height: 200}});
+    h.add(a);
+    h.advance(2000);
+    const records = JSON.parse(sets(h)[0].args[0]).records;
+    assert.equal(records.length, 1);
+    assert.equal(records[0].mode, 'float');
+    assert.deepEqual(records[0].floatGeom, {x: 50, y: 60, width: 300, height: 200});
+});
+
+test('reassign: a floating window moved to another output is not touched and tiles there', () => {
+    const h = harness({manageClasses: '*', defaultMode: 'float', gapInner: 8, gapOuter: 8}, {
+        areas: {
+            'DP-1': {x: 0, y: 0, width: 1200, height: 800},
+            'DP-2': {x: 1200, y: 0, width: 1000, height: 800}
+        }
+    });
+    const a = makeWindow('a', {frameGeometry: {x: 100, y: 100, width: 300, height: 300}});
+    h.add(a);
+    a.output = 'DP-2';
+    a.outputChanged.emit();
+    assert.equal(a.geometryWrites, 0);
+    fireShortcut(h, 'Toggle Float', a);
+    assert.deepEqual(geometry(a), {x: 1208, y: 8, width: 984, height: 784});
+    fireShortcut(h, 'Toggle Float', a);
+    assert.ok(geometry(a).x >= 1200, 'restored rectangle follows the output');
+});
+
+test('drag: moving or resizing a floating window never relayouts and is remembered', () => {
+    const h = harness({manageClasses: '*', defaultMode: 'float', tileClasses: 'zen',
+        gapInner: 8, gapOuter: 8});
+    const zen = makeWindow('z', {resourceClass: 'zen'});
+    const free = makeWindow('f', {resourceClass: 'kate',
+        frameGeometry: {x: 200, y: 200, width: 400, height: 300}});
+    h.add(zen);
+    h.add(free);
+    const zenWrites = zen.geometryWrites;
+    free.move = true;
+    free.interactiveMoveResizeStarted.emit();
+    free.frameGeometry = {x: 700, y: 150, width: 400, height: 300};
+    h.workspace.cursorPos = {x: geometry(zen).x + 10, y: geometry(zen).y + 10};
+    free.interactiveMoveResizeFinished.emit();
+    free.move = false;
+    free.resize = true;
+    free.interactiveMoveResizeStarted.emit();
+    free.frameGeometry = {x: 700, y: 150, width: 500, height: 350};
+    free.interactiveMoveResizeFinished.emit();
+    assert.equal(zen.geometryWrites, zenWrites);
+    assert.equal(free.geometryWrites, 2, 'only the two test assignments');
+    fireShortcut(h, 'Toggle Float', free);
+    fireShortcut(h, 'Toggle Float', free);
+    assert.deepEqual(geometry(free), {x: 700, y: 150, width: 500, height: 350});
 });
