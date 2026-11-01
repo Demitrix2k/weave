@@ -27,7 +27,10 @@ function makeWindow(id, options = {}) {
         frameGeometryChanged: geometryChanged,
         tileChanged,
         interactiveMoveResizeStarted: signal(),
-        interactiveMoveResizeFinished: signal()
+        interactiveMoveResizeFinished: signal(),
+        outputChanged: signal(),
+        desktopsChanged: signal(),
+        desktopChanged: signal()
     };
     let geometry = options.frameGeometry || {x: 0.4, y: 0.2, width: 799.6, height: 600.5};
     let geometryWrites = 0;
@@ -75,11 +78,22 @@ function harness(settings = {}, options = {}) {
     const workspace = {
         windowAdded: added,
         windowRemoved: removed,
+        screensChanged: signal(),
+        outputsChanged: signal(),
         configChanged: changed,
         activeWindow: null,
         cursorPos: {x: 500, y: 400},
-        currentDesktopForScreen: () => 2,
-        clientArea: () => ({x: 0.4, y: 0.2, width: 1200.4, height: 800.8}),
+        screens: options.screens || ['DP-1', 'DP-2'],
+        desktops: Object.assign({}, options.desktops || {}),
+        currentDesktopForScreen(output) {
+            const name = typeof output === 'string' ? output : output.name;
+            return this.desktops[name] === undefined ? 2 : this.desktops[name];
+        },
+        clientArea(unused, output) {
+            const name = typeof output === 'string' ? output : output.name;
+            return options.areas && options.areas[name] ? options.areas[name] :
+                {x: 0.4, y: 0.2, width: 1200.4, height: 800.8};
+        },
         windowList: () => windows
     };
     (options.initialWindows || []).forEach(window => windows.push(window));
@@ -304,4 +318,130 @@ test('lazy settle fallback adopts on the next event after the delay', () => {
     const b = makeWindow('b');
     h.add(b);
     assert.ok(b.geometryWrites > 0);
+});
+
+test('output reassignment reflows both contexts and uses a single leaf on the new output', () => {
+    const h = harness({manageClasses: 'editor', gapInner: 8, gapOuter: 8}, {
+        areas: {
+            'DP-1': {x: 0, y: 0, width: 1200, height: 800},
+            'DP-2': {x: 1200, y: 0, width: 1000, height: 800}
+        }
+    });
+    const a = makeWindow('a');
+    const b = makeWindow('b');
+    const c = makeWindow('c');
+    h.add(a);
+    h.add(b);
+    h.add(c);
+    c.output = 'DP-2';
+    c.outputChanged.emit();
+    assert.deepEqual(geometry(a), {x: 8, y: 8, width: 706, height: 784});
+    assert.deepEqual(geometry(b), {x: 722, y: 8, width: 470, height: 784});
+    assert.deepEqual(geometry(c), {x: 1208, y: 8, width: 984, height: 784});
+    const writes = [a.geometryWrites, b.geometryWrites, c.geometryWrites];
+    c.outputChanged.emit();
+    assert.deepEqual([a.geometryWrites, b.geometryWrites, c.geometryWrites], writes);
+    c.output = 'DP-1';
+    c.outputChanged.emit();
+    assert.deepEqual(geometry(a), {x: 8, y: 8, width: 706, height: 784});
+    assert.deepEqual(geometry(b), {x: 722, y: 8, width: 231, height: 784});
+    assert.deepEqual(geometry(c), {x: 961, y: 8, width: 231, height: 784});
+});
+
+test('desktop changes reassign context and an emptied context can be left behind', () => {
+    const h = harness({manageClasses: 'editor', gapOuter: 8}, {
+        areas: {'DP-1': {x: 0, y: 0, width: 1200, height: 800}},
+        desktops: {'DP-1': 2}
+    });
+    const a = makeWindow('a');
+    h.add(a);
+    h.workspace.desktops['DP-1'] = 3;
+    a.desktopsChanged.emit();
+    assert.deepEqual(geometry(a), {x: 8, y: 8, width: 1184, height: 784});
+    const before = a.geometryWrites;
+    a.desktopChanged.emit();
+    assert.equal(a.geometryWrites, before);
+});
+
+test('floating windows follow output changes without being relaid', () => {
+    const h = harness({manageClasses: 'editor'});
+    const a = makeWindow('a');
+    h.add(a);
+    fireShortcut(h, 'Toggle Float', a);
+    const rect = geometry(a);
+    const writes = a.geometryWrites;
+    a.output = 'DP-2';
+    a.outputChanged.emit();
+    assert.deepEqual(geometry(a), rect);
+    assert.equal(a.geometryWrites, writes);
+});
+
+test('cross-output drag inserts at the destination edge and reflows both contexts', () => {
+    const h = harness({manageClasses: 'editor', gapInner: 0, gapOuter: 0}, {
+        areas: {
+            'DP-1': {x: 0, y: 0, width: 1200, height: 800},
+            'DP-2': {x: 1200, y: 0, width: 1000, height: 800}
+        }
+    });
+    const a = makeWindow('a');
+    const b = makeWindow('b', {output: 'DP-2'});
+    const c = makeWindow('c');
+    h.add(a);
+    h.add(b);
+    h.add(c);
+    c.move = true;
+    c.interactiveMoveResizeStarted.emit();
+    c.output = 'DP-2';
+    c.outputChanged.emit();
+    h.workspace.cursorPos = {x: geometry(b).x + 2, y: geometry(b).y + 200};
+    c.interactiveMoveResizeFinished.emit();
+    assert.deepEqual(geometry(c), {x: 1200, y: 0, width: 500, height: 800});
+    assert.deepEqual(geometry(b), {x: 1700, y: 0, width: 500, height: 800});
+    assert.deepEqual(geometry(a), {x: 0, y: 0, width: 1200, height: 800});
+});
+
+test('moving the only tiled window removes its old context tree', () => {
+    const h = harness({manageClasses: 'editor', gapOuter: 8}, {
+        areas: {'DP-1': {x: 0, y: 0, width: 1200, height: 800},
+            'DP-2': {x: 1200, y: 0, width: 1000, height: 800}}
+    });
+    const a = makeWindow('a');
+    h.add(a);
+    a.output = 'DP-2';
+    a.outputChanged.emit();
+    assert.deepEqual(geometry(a), {x: 1208, y: 8, width: 984, height: 784});
+});
+
+test('output removal migrates windows and drops contexts for vanished screens', () => {
+    const h = harness({manageClasses: 'editor', gapOuter: 8}, {
+        screens: ['DP-1', 'DP-2'],
+        areas: {'DP-1': {x: 0, y: 0, width: 1200, height: 800},
+            'DP-2': {x: 1200, y: 0, width: 1000, height: 800}}
+    });
+    const a = makeWindow('a');
+    h.add(a);
+    a.output = 'DP-2';
+    h.workspace.screens = ['DP-2'];
+    h.workspace.screensChanged.emit();
+    assert.deepEqual(geometry(a), {x: 1208, y: 8, width: 984, height: 784});
+});
+
+test('observed output changes only record context until startup adoption', () => {
+    const h = harness({manageClasses: 'editor', settleSeconds: 1}, {
+        areas: {'DP-1': {x: 0, y: 0, width: 1200, height: 800},
+            'DP-2': {x: 1200, y: 0, width: 1000, height: 800}}
+    });
+    const a = makeWindow('a', {
+        frameGeometry: {x: 1208, y: 8, width: 984, height: 784}
+    });
+    h.add(a);
+    h.advance(500);
+    a.output = 'DP-2';
+    a.outputChanged.emit();
+    assert.equal(a.geometryWrites, 0);
+    h.advance(500);
+    assert.equal(a.geometryWrites, 0);
+    const b = makeWindow('b', {output: 'DP-2'});
+    h.add(b);
+    assert.ok(a.geometryWrites + b.geometryWrites > 0);
 });

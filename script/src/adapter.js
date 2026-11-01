@@ -89,6 +89,11 @@
         return context;
     }
 
+    function discardIfEmpty(context) {
+        if (context.ids.length) { return; }
+        contexts.delete(context.key);
+    }
+
     function workArea(context) {
         if (typeof workspace.clientArea !== "function" ||
                 typeof KWin === "undefined" || KWin.PlacementArea === undefined) {
@@ -182,6 +187,7 @@
             candidateWatches.add(id);
             connect(window, "interactiveMoveResizeStarted", settleEvent);
             connect(window, "interactiveMoveResizeFinished", settleEvent);
+            connectContextSignals(window, function () { contextFor(window); });
         }
         if (restart && observing) { extendSettle(); }
     }
@@ -243,7 +249,10 @@
             var area = api.geometry.workRect(workArea(context),
                 {outer: config.gapOuter});
             var inferred = api.tree.infer(group.rects, area, 2);
-            if (!inferred) { return; }
+            if (!inferred) {
+                discardIfEmpty(context);
+                return;
+            }
             context.tree = inferred.tree;
             context.innerGap = inferred.gap;
             context.adopted = true;
@@ -258,7 +267,8 @@
                     mode: "tiled",
                     floatGeometry: roundedRect(property(window, "frameGeometry")),
                     expected: new api.ExpectedGeometry(),
-                    drag: null
+                    drag: null,
+                    reassigning: false
                 };
                 states.set(id, state);
                 context.ids.push(id);
@@ -284,7 +294,8 @@
             mode: "tiled",
             floatGeometry: roundedRect(property(window, "frameGeometry")),
             expected: new api.ExpectedGeometry(),
-            drag: null
+            drag: null,
+            reassigning: false
         };
         states.set(id, state);
         if (context.adopted && context.tree) {
@@ -316,7 +327,8 @@
         } else {
             rebuild(context);
         }
-        applyContext(context);
+        if (context.ids.length) { applyContext(context); }
+        else { discardIfEmpty(context); }
     }
 
     function floating(state) {
@@ -325,13 +337,15 @@
         state.context.ids = state.context.ids.filter(function (id) { return id !== state.id; });
         rebuild(state.context);
         if (state.floatGeometry) { setGeometry(state.window, state.floatGeometry); }
-        applyContext(state.context);
+        if (state.context.ids.length) { applyContext(state.context); }
+        else { discardIfEmpty(state.context); }
     }
 
     function tiling(state) {
         if (state.mode === "tiled") { applyContext(state.context); return; }
         state.floatGeometry = roundedRect(property(state.window, "frameGeometry"));
         state.mode = "tiled";
+        contexts.set(state.context.key, state.context);
         state.context.ids.push(state.id);
         rebuild(state.context);
         applyContext(state.context);
@@ -339,6 +353,10 @@
 
     function watchWindow(state) {
         var window = state.window;
+        connectContextSignals(window, function () {
+            if (!observing) { reassign(state); }
+            else { contextFor(window); }
+        });
         connect(window, "frameGeometryChanged", function () {
             var rect = roundedRect(property(window, "frameGeometry"));
             if (rect) { state.expected.consume(state.id, rect); }
@@ -348,12 +366,14 @@
             state.drag = {
                 move: !!property(window, "move"),
                 resize: !!property(window, "resize"),
-                startGeometry: roundedRect(property(window, "frameGeometry"))
+                startGeometry: roundedRect(property(window, "frameGeometry")),
+                context: state.context
             };
         });
         connect(window, "interactiveMoveResizeFinished", function () {
             settleEvent();
-            finishDrag(state);
+            if (!observing) { reassign(state); }
+            if (states.has(state.id)) { finishDrag(state); }
         });
         connect(window, "tileChanged", function () {
             if (state.mode !== "tiled" || !config.dropNativeTiles ||
@@ -369,6 +389,51 @@
         });
     }
 
+    function connectContextSignals(window, handler) {
+        ["outputChanged", "desktopsChanged", "desktopChanged"].forEach(function (name) {
+            connect(window, name, handler);
+        });
+    }
+
+    function reassign(state) {
+        if (!state || state.reassigning || !states.has(state.id)) { return; }
+        if (!eligible(state.window)) {
+            removeWindow(state.window);
+            return;
+        }
+        var next = contextFor(state.window);
+        var previous = state.context;
+        if (next.key === previous.key) {
+            state.context = next;
+            return;
+        }
+        state.reassigning = true;
+        try {
+            if (state.mode === "tiled") {
+                previous.ids = previous.ids.filter(function (id) { return id !== state.id; });
+                previous.tree = api.tree.remove(previous.tree, state.id);
+            }
+            discardIfEmpty(previous);
+            state.context = next;
+            if (state.mode === "tiled") {
+                if (next.ids.indexOf(state.id) < 0) { next.ids.push(state.id); }
+                if (!next.tree) { next.tree = api.tree.insert(null, state.id, null, "right"); }
+                else {
+                    var target = next.ids.filter(function (id) { return id !== state.id; }).pop();
+                    if (target) {
+                        next.tree = api.tree.insert(next.tree, state.id, target, "right");
+                    }
+                    else { next.tree = api.tree.insert(null, state.id, null, "right"); }
+                }
+            }
+            if (previous.ids.length) { applyContext(previous); }
+            if (state.mode === "tiled") { applyContext(next); }
+            log("info", "moved " + state.id + " from " + previous.key + " to " + next.key);
+        } finally {
+            state.reassigning = false;
+        }
+    }
+
     function finishDrag(state) {
         var drag = state.drag;
         state.drag = null;
@@ -376,6 +441,13 @@
         if (drag.move && !drag.resize) {
             var point = property(workspace, "cursorPos");
             var context = state.context;
+            if (drag.context.key !== context.key) {
+                insertAtDrop(state, context, point);
+                if (drag.context.ids.length) { applyContext(drag.context); }
+                else { discardIfEmpty(drag.context); }
+                applyContext(context);
+                return;
+            }
             var hit = point && api.tree.hitTest(context.tree, workArea(context),
                 contextGaps(context), {x: point.x, y: point.y});
             var target = hit && hit.leaf.windows[0];
@@ -391,6 +463,18 @@
             }
         } else if (drag.resize) {
             resizeAtCursor(state);
+        }
+    }
+
+    function insertAtDrop(state, context, point) {
+        context.tree = api.tree.remove(context.tree, state.id);
+        var hit = point && context.tree && api.tree.hitTest(context.tree,
+            workArea(context), contextGaps(context), {x: point.x, y: point.y});
+        var target = hit && hit.leaf.windows[0];
+        if (target) {
+            context.tree = api.tree.insert(context.tree, state.id, target, hit.edge);
+        } else {
+            context.tree = api.tree.insert(null, state.id, null, "right");
         }
     }
 
@@ -506,6 +590,31 @@
         log("info", "configuration reloaded");
     }
 
+    function outputNames() {
+        var outputs = property(workspace, "screens") || property(workspace, "outputs");
+        if (typeof outputs === "function") { outputs = outputs.call(workspace); }
+        if (!outputs || typeof outputs.length !== "number") { return null; }
+        var names = [];
+        for (var index = 0; index < outputs.length; index++) {
+            names.push(outputName(outputs[index]));
+        }
+        return names;
+    }
+
+    function outputsChanged() {
+        var names = outputNames();
+        if (!names) { return; }
+        Array.from(states.values()).forEach(function (state) { reassign(state); });
+        Array.from(contexts.values()).forEach(function (context) {
+            if (names.indexOf(context.outputName) >= 0) { return; }
+            context.ids.slice().forEach(function (id) {
+                var state = states.get(id);
+                if (state) { reassign(state); }
+            });
+            if (!context.ids.length) { discardIfEmpty(context); }
+        });
+    }
+
     guarded("startup", function () {
         loadConfig();
         installShortcuts();
@@ -517,6 +626,8 @@
         });
         connect(workspace, "windowRemoved", removeWindow);
         connect(workspace, "windowActivated", settleEvent);
+        connect(workspace, "screensChanged", outputsChanged);
+        connect(workspace, "outputsChanged", outputsChanged);
         if (property(workspace, "configChanged") !== undefined) {
             connect(workspace, "configChanged", refreshConfig);
         }
