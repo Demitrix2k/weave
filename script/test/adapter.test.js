@@ -7,8 +7,10 @@ const path = require('node:path');
 const root = path.resolve(__dirname, '../..');
 const buildFiles = ['geometry', 'tree', 'snap', 'stage', 'arrangement', 'context',
     'persist', 'index'];
+const templatesJson = fs.readFileSync(path.join(root, 'core/templates.json'), 'utf8');
 const source = buildFiles.map(name => fs.readFileSync(
     path.join(root, 'core', name + '.js'), 'utf8')).concat(
+    'var WEAVE_TEMPLATES = ' + templatesJson + ';',
     fs.readFileSync(path.join(root, 'script/src/adapter.js'), 'utf8')).join('\n');
 
 function signal() {
@@ -82,6 +84,7 @@ function harness(settings = {}, options = {}) {
         windowRemoved: removed,
         screensChanged: signal(),
         outputsChanged: signal(),
+        windowActivated: signal(),
         configChanged: changed,
         activeWindow: null,
         cursorPos: {x: 500, y: 400},
@@ -96,8 +99,12 @@ function harness(settings = {}, options = {}) {
             return options.areas && options.areas[name] ? options.areas[name] :
                 {x: 0.4, y: 0.2, width: 1200.4, height: 800.8};
         },
-        windowList: () => windows
+        windowList: () => windows,
+        raised: []
     };
+    if (!options.noRaise) {
+        workspace.raiseWindow = function (window) { this.raised.push(window.internalId); };
+    }
     (options.initialWindows || []).forEach(window => windows.push(window));
     const dbusCalls = [];
     const quit = signal();
@@ -154,8 +161,12 @@ function harness(settings = {}, options = {}) {
         }
         now = target;
     }
+    function activate(window) {
+        workspace.activeWindow = window;
+        workspace.windowActivated.emit(window);
+    }
     return {workspace, shortcuts, logs, windows, add, remove, changed,
-        advance, now: () => now, dbusCalls, quit};
+        advance, now: () => now, dbusCalls, quit, activate};
 }
 
 function geometry(window) {
@@ -171,7 +182,7 @@ test('script is inert by default and every shortcut has an empty default key', (
     const h = harness();
     h.add(makeWindow('a'));
     assert.deepEqual(geometry(h.windows[0]), {x: 0.4, y: 0.2, width: 799.6, height: 600.5});
-    assert.equal(h.shortcuts.size, 17);
+    assert.equal(h.shortcuts.size, 27);
     h.shortcuts.forEach(shortcut => assert.equal(shortcut.key, ''));
 });
 
@@ -803,6 +814,8 @@ test('build.sh injects the content hash into dist main.js', () => {
     const built = fs.readFileSync(path.join(dist, 'contents/code/main.js'), 'utf8');
     assert.ok(built.includes('BUILD_ID = "' + id + '"'));
     assert.ok(!built.includes('@@BUILD_ID@@'));
+    assert.ok(built.includes('var WEAVE_TEMPLATES = {'));
+    assert.ok(built.includes('"pair-centred"'));
 });
 
 function resizeHarness() {
@@ -895,4 +908,423 @@ test('resize: no side changed re-applies the layout', () => {
     const before = [a, b, c].map(geometry);
     dragFrame(h, a, {x: 8.4, width: 706});
     assert.deepEqual([a, b, c].map(geometry), before);
+});
+
+// ---- layouts and arrangements ----
+
+const gapped = {manageClasses: 'editor', gapInner: 8, gapOuter: 8};
+
+function rectOf(window) {
+    const g = geometry(window);
+    return [g.x, g.y, g.width, g.height];
+}
+
+function addWindows(h, count, options) {
+    const made = [];
+    for (let index = 0; index < count; index++) {
+        const window = makeWindow('w' + index, options);
+        made.push(window);
+        h.add(window);
+    }
+    return made;
+}
+
+const layoutRects = {
+    master: {
+        1: [[8, 8, 1184, 785]],
+        2: [[8, 8, 706, 785], [722, 8, 470, 785]],
+        3: [[8, 8, 706, 785], [722, 8, 470, 389], [722, 405, 470, 388]],
+        5: [[8, 8, 706, 785], [722, 8, 470, 194], [722, 210, 470, 192],
+            [722, 410, 470, 188], [722, 606, 470, 187]]
+    },
+    columns: {
+        1: [[8, 8, 1184, 785]],
+        2: [[8, 8, 588, 785], [604, 8, 588, 785]],
+        3: [[8, 8, 392, 785], [408, 8, 388, 785], [804, 8, 388, 785]],
+        5: [[8, 8, 235, 785], [251, 8, 233, 785], [492, 8, 231, 785], [731, 8, 227, 785],
+            [966, 8, 226, 785]]
+    },
+    monocle: {
+        1: [[8, 8, 1184, 785]],
+        2: [[8, 8, 1184, 785], [8, 8, 1184, 785]],
+        3: [[8, 8, 1184, 785], [8, 8, 1184, 785], [8, 8, 1184, 785]],
+        5: [[8, 8, 1184, 785], [8, 8, 1184, 785], [8, 8, 1184, 785], [8, 8, 1184, 785],
+            [8, 8, 1184, 785]]
+    },
+    spiral: {
+        1: [[8, 8, 1184, 785]],
+        2: [[8, 8, 588, 785], [604, 8, 588, 785]],
+        3: [[8, 8, 588, 785], [604, 8, 588, 389], [604, 405, 588, 388]],
+        5: [[8, 8, 588, 785], [604, 8, 588, 389], [902, 405, 290, 388], [604, 603, 290, 190],
+            [604, 405, 290, 190]]
+    }
+};
+
+test('every layout gives exact rects for 1, 2, 3 and 5 windows through defaultLayout', () => {
+    Object.keys(layoutRects).forEach(name => {
+        [1, 2, 3, 5].forEach(count => {
+            const h = harness(Object.assign({defaultLayout: name}, gapped));
+            const windows = addWindows(h, count);
+            assert.deepEqual(windows.map(rectOf), layoutRects[name][count], name + ' ' + count);
+        });
+    });
+});
+
+test('layout shortcuts switch a populated context to the same exact rects', () => {
+    Object.keys(layoutRects).forEach(name => {
+        [1, 2, 3, 5].forEach(count => {
+            const h = harness(gapped);
+            const windows = addWindows(h, count);
+            fireShortcut(h, 'Layout ' + name[0].toUpperCase() + name.slice(1), windows[0]);
+            assert.deepEqual(windows.map(rectOf), layoutRects[name][count], name + ' ' + count);
+        });
+    });
+});
+
+test('layout next and previous cycle master, columns, monocle, spiral', () => {
+    const h = harness(Object.assign({logLevel: 'info'}, gapped));
+    const windows = addWindows(h, 3);
+    const seen = [];
+    for (let step = 0; step < 5; step++) {
+        fireShortcut(h, 'Layout Next', windows[0]);
+        seen.push(rectOf(windows[1]));
+    }
+    assert.deepEqual(seen, [layoutRects.columns[3][1], layoutRects.monocle[3][1],
+        layoutRects.spiral[3][1], layoutRects.master[3][1], layoutRects.columns[3][1]]);
+    fireShortcut(h, 'Layout Previous', windows[0]);
+    assert.deepEqual(rectOf(windows[1]), layoutRects.master[3][1]);
+    fireShortcut(h, 'Layout Previous', windows[0]);
+    assert.deepEqual(rectOf(windows[1]), layoutRects.spiral[3][1]);
+});
+
+test('every layout switch logs "layout <context> -> <name>" at info level', () => {
+    const h = harness(Object.assign({logLevel: 'info'}, gapped));
+    const windows = addWindows(h, 2);
+    fireShortcut(h, 'Layout Columns', windows[0]);
+    fireShortcut(h, 'Layout Columns', windows[0]);
+    fireShortcut(h, 'Layout Spiral', windows[0]);
+    const lines = h.logs.filter(line => line.includes('layout '));
+    assert.deepEqual(lines, [
+        'weave layout ["DP-1",2] -> columns',
+        'weave layout ["DP-1",2] -> columns',
+        'weave layout ["DP-1",2] -> spiral'
+    ]);
+});
+
+test('switching layouts keeps the leaf order, including after a drag swap', () => {
+    const h = harness({manageClasses: 'editor', gapInner: 0, gapOuter: 0});
+    const [a, b, c] = addWindows(h, 3);
+    c.move = true;
+    c.interactiveMoveResizeStarted.emit();
+    c.frameGeometry = {x: 100, y: 100, width: 300, height: 300};
+    h.workspace.cursorPos = {x: geometry(a).x + geometry(a).width / 2,
+        y: geometry(a).y + geometry(a).height / 2};
+    c.interactiveMoveResizeFinished.emit();
+    c.move = false;
+    assert.ok(geometry(c).x < geometry(b).x && geometry(a).x > 0);
+    fireShortcut(h, 'Layout Columns', a);
+    assert.ok(geometry(c).x < geometry(b).x);
+    assert.ok(geometry(b).x < geometry(a).x);
+    fireShortcut(h, 'Layout Spiral', a);
+    fireShortcut(h, 'Layout Master', a);
+    assert.ok(geometry(c).x < geometry(b).x && geometry(c).x < geometry(a).x);
+    assert.equal(geometry(c).height, 801);
+});
+
+test('arrivals use the context layout and a switch clears the adopted state', () => {
+    const adopted = [
+        makeWindow('a', {frameGeometry: {x: 8, y: 8, width: 706, height: 785}}),
+        makeWindow('b', {frameGeometry: {x: 722, y: 8, width: 470, height: 785}})
+    ];
+    const h = harness(gapped, {initialWindows: adopted});
+    fireShortcut(h, 'Layout Columns', adopted[0]);
+    const c = makeWindow('c');
+    h.add(c);
+    assert.deepEqual([adopted[0], adopted[1], c].map(rectOf), layoutRects.columns[3]);
+
+    const monocle = harness(gapped);
+    const windows = addWindows(monocle, 2);
+    fireShortcut(monocle, 'Layout Monocle', windows[0]);
+    const extra = makeWindow('extra');
+    monocle.add(extra);
+    assert.deepEqual(rectOf(extra), [8, 8, 1184, 785]);
+});
+
+test('each context keeps its own layout and defaultLayout seeds new ones', () => {
+    const h = harness(Object.assign({defaultLayout: 'spiral'}, gapped));
+    const left = addWindows(h, 2);
+    const right = [makeWindow('r0', {output: 'DP-2'}), makeWindow('r1', {output: 'DP-2'})];
+    right.forEach(window => h.add(window));
+    assert.deepEqual(right.map(rectOf), layoutRects.spiral[2]);
+    fireShortcut(h, 'Layout Columns', left[0]);
+    fireShortcut(h, 'Layout Monocle', right[0]);
+    assert.deepEqual(left.map(rectOf), layoutRects.columns[2]);
+    assert.deepEqual(right.map(rectOf), layoutRects.monocle[2]);
+    h.workspace.desktops['DP-1'] = 3;
+    const other = makeWindow('other');
+    h.add(other);
+    assert.deepEqual(rectOf(other), layoutRects.spiral[1][0]);
+    const next = makeWindow('next');
+    h.add(next);
+    assert.deepEqual([other, next].map(rectOf), layoutRects.spiral[2]);
+    assert.deepEqual(left.map(rectOf), layoutRects.columns[2]);
+});
+
+test('invalid or reserved defaultLayout values fall back to master', () => {
+    ['bogus', 'stage', '', 'Columns'].forEach(value => {
+        const h = harness(Object.assign({defaultLayout: value}, gapped));
+        assert.deepEqual(addWindows(h, 3).map(rectOf), layoutRects.master[3], value);
+    });
+    const columns = harness(Object.assign({defaultLayout: 'columns'}, gapped));
+    assert.deepEqual(addWindows(columns, 2).map(rectOf), layoutRects.columns[2]);
+});
+
+test('monocle raises the active window and tolerates a missing raise API', () => {
+    const h = harness(gapped);
+    const [a, b] = addWindows(h, 2);
+    h.activate(b);
+    fireShortcut(h, 'Layout Monocle', b);
+    assert.deepEqual(h.workspace.raised, ['w1']);
+    h.activate(a);
+    assert.deepEqual(h.workspace.raised, ['w1', 'w0']);
+    fireShortcut(h, 'Layout Master', a);
+    h.activate(b);
+    assert.deepEqual(h.workspace.raised, ['w1', 'w0']);
+
+    const bare = harness(gapped, {noRaise: true});
+    const windows = addWindows(bare, 2);
+    bare.activate(windows[1]);
+    fireShortcut(bare, 'Layout Monocle', windows[1]);
+    bare.activate(windows[0]);
+    assert.deepEqual(rectOf(windows[0]), [8, 8, 1184, 785]);
+});
+
+const slotRects = {
+    'pair-centred': [[126, 87, 470, 628], [604, 87, 470, 628]],
+    'main-side': [[8, 8, 825, 785], [841, 8, 351, 785]],
+    'golden-split': [[8, 8, 728, 785], [744, 8, 448, 785]],
+    'trio-columns': [[8, 8, 391, 785], [407, 8, 386, 785], [801, 8, 391, 785]],
+    'trio-main-two-stacked': [[8, 8, 706, 785], [722, 8, 470, 389], [722, 405, 470, 388]]
+};
+
+function activatedWindows(h, count) {
+    const windows = addWindows(h, count);
+    windows.forEach(window => h.activate(window));
+    return windows;
+}
+
+test('every template gives exact slot rects for 1 to 4 windows and spares the rest', () => {
+    Object.keys(slotRects).forEach((name, templateIndex) => {
+        [1, 2, 3, 4].forEach(count => {
+            const h = harness(gapped);
+            const windows = activatedWindows(h, count);
+            const before = windows.map(rectOf);
+            const writes = windows.map(window => window.geometryWrites);
+            for (let press = 0; press <= templateIndex; press++) {
+                fireShortcut(h, 'Arrange Next', windows[count - 1]);
+            }
+            const slots = slotRects[name];
+            const chosen = windows.slice().reverse().slice(0, slots.length);
+            chosen.forEach((window, slot) => {
+                assert.deepEqual(rectOf(window), slots[slot], name + ' ' + count + ' slot ' + slot);
+            });
+            windows.forEach((window, index) => {
+                if (chosen.indexOf(window) >= 0) { return; }
+                assert.deepEqual(rectOf(window), before[index], name + ' ' + count);
+                assert.equal(window.geometryWrites, writes[index]);
+            });
+        });
+    });
+});
+
+test('arrange next and previous cycle the templates in file order', () => {
+    const h = harness(gapped);
+    const windows = activatedWindows(h, 3);
+    const names = Object.keys(slotRects);
+    for (let press = 0; press < names.length + 1; press++) {
+        fireShortcut(h, 'Arrange Next', windows[2]);
+        const expected = names[press % names.length];
+        assert.deepEqual(rectOf(windows[2]), slotRects[expected][0], expected);
+    }
+    fireShortcut(h, 'Arrange Previous', windows[2]);
+    assert.deepEqual(rectOf(windows[2]), slotRects[names[names.length - 1]][0]);
+    const fresh = harness(gapped);
+    const single = activatedWindows(fresh, 1);
+    fireShortcut(fresh, 'Arrange Previous', single[0]);
+    assert.deepEqual(rectOf(single[0]), slotRects['trio-main-two-stacked'][0]);
+});
+
+test('the active window and the most recently active ones fill the slots', () => {
+    const h = harness(gapped);
+    const [w0, w1, w2, w3] = addWindows(h, 4);
+    [w2, w0, w3, w1].forEach(window => h.activate(window));
+    const writes = [w0.geometryWrites, w2.geometryWrites];
+    fireShortcut(h, 'Arrange Next', w1);
+    assert.deepEqual(rectOf(w1), slotRects['pair-centred'][0]);
+    assert.deepEqual(rectOf(w3), slotRects['pair-centred'][1]);
+    assert.deepEqual([w0.geometryWrites, w2.geometryWrites], writes);
+    fireShortcut(h, 'Arrange Next', w1);
+    fireShortcut(h, 'Arrange Next', w1);
+    fireShortcut(h, 'Arrange Next', w1);
+    assert.deepEqual([w1, w3, w0].map(rectOf), slotRects['trio-columns']);
+});
+
+test('windows never activated rank last, in arrival order', () => {
+    const h = harness(gapped);
+    const [w0, w1, w2, w3] = addWindows(h, 4);
+    h.activate(w3);
+    h.workspace.windowActivated.emit(w1);
+    h.workspace.activeWindow = w3;
+    for (let press = 0; press < 4; press++) { fireShortcut(h, 'Arrange Next', w3); }
+    assert.deepEqual([w3, w1, w0].map(rectOf), slotRects['trio-columns']);
+    assert.notDeepEqual(rectOf(w2), slotRects['trio-columns'][0]);
+});
+
+test('empty slots stay empty and a window set smaller than the template is fine', () => {
+    const h = harness(gapped);
+    const [only] = activatedWindows(h, 1);
+    for (let press = 0; press < 4; press++) { fireShortcut(h, 'Arrange Next', only); }
+    assert.deepEqual(rectOf(only), slotRects['trio-columns'][0]);
+    fireShortcut(h, 'Arrange Reapply', only);
+    assert.deepEqual(rectOf(only), slotRects['trio-columns'][0]);
+});
+
+test('reapply snaps a wandered group member back to its slot', () => {
+    const h = harness(gapped);
+    const windows = activatedWindows(h, 2);
+    fireShortcut(h, 'Arrange Next', windows[1]);
+    windows[0].frameGeometry = {x: 400, y: 300, width: 200, height: 200};
+    windows[1].frameGeometry = {x: 10, y: 10, width: 300, height: 300};
+    fireShortcut(h, 'Arrange Reapply', windows[1]);
+    assert.deepEqual(rectOf(windows[1]), slotRects['pair-centred'][0]);
+    assert.deepEqual(rectOf(windows[0]), slotRects['pair-centred'][1]);
+});
+
+test('release returns tiled windows to the tree and floated ones to their rectangle', () => {
+    const h = harness(gapped);
+    const [w0, w1, w2] = addWindows(h, 3);
+    fireShortcut(h, 'Toggle Float', w0);
+    w0.frameGeometry = {x: 300, y: 200, width: 500, height: 400};
+    [w0, w1, w2].forEach(window => h.activate(window));
+    for (let press = 0; press < 4; press++) { fireShortcut(h, 'Arrange Next', w2); }
+    assert.deepEqual([w2, w1, w0].map(rectOf), slotRects['trio-columns']);
+    fireShortcut(h, 'Arrange Release', w2);
+    assert.deepEqual(rectOf(w0), [300, 200, 500, 400]);
+    assert.deepEqual(rectOf(w1), layoutRects.master[2][0]);
+    assert.deepEqual(rectOf(w2), layoutRects.master[2][1]);
+    w0.frameGeometry = {x: 50, y: 60, width: 500, height: 400};
+    fireShortcut(h, 'Arrange Reapply', w2);
+    assert.deepEqual(rectOf(w0), [50, 60, 500, 400]);
+    fireShortcut(h, 'Toggle Float', w0);
+    assert.deepEqual(rectOf(w0), layoutRects.master[3][2]);
+});
+
+test('toggle float on an arranged window releases only that window', () => {
+    const h = harness(gapped);
+    const windows = activatedWindows(h, 3);
+    for (let press = 0; press < 4; press++) { fireShortcut(h, 'Arrange Next', windows[2]); }
+    const [w0, w1, w2] = windows;
+    fireShortcut(h, 'Toggle Float', w1);
+    assert.deepEqual(rectOf(w1), slotRects['trio-columns'][1]);
+    w1.frameGeometry = {x: 20, y: 30, width: 400, height: 300};
+    fireShortcut(h, 'Arrange Reapply', w2);
+    assert.deepEqual(rectOf(w1), [20, 30, 400, 300]);
+    assert.deepEqual(rectOf(w0), slotRects['trio-columns'][2]);
+    assert.deepEqual(rectOf(w2), slotRects['trio-columns'][0]);
+    fireShortcut(h, 'Arrange Release', w2);
+    assert.deepEqual(rectOf(w1), [20, 30, 400, 300]);
+    fireShortcut(h, 'Toggle Float', w1);
+    assert.deepEqual(rectOf(w1), layoutRects.master[3][2]);
+});
+
+test('closing an arranged window empties its slot without moving the others', () => {
+    const h = harness(gapped);
+    const windows = activatedWindows(h, 4);
+    for (let press = 0; press < 4; press++) { fireShortcut(h, 'Arrange Next', windows[3]); }
+    const [w0, w1, w2, w3] = windows;
+    const untouched = w0.geometryWrites;
+    const writes = [w2.geometryWrites, w3.geometryWrites];
+    h.remove(w2);
+    assert.deepEqual([w2.geometryWrites, w3.geometryWrites], writes);
+    assert.equal(w0.geometryWrites, untouched);
+    w3.frameGeometry = {x: 1, y: 1, width: 100, height: 100};
+    fireShortcut(h, 'Arrange Reapply', w3);
+    assert.deepEqual(rectOf(w3), slotRects['trio-columns'][0]);
+    assert.deepEqual(rectOf(w1), slotRects['trio-columns'][2]);
+    h.remove(w3);
+    h.remove(w1);
+    assert.deepEqual(rectOf(w0), layoutRects.master[1][0]);
+});
+
+test('drag does nothing to arranged windows and they are not re-laid', () => {
+    const h = harness(gapped);
+    const windows = activatedWindows(h, 3);
+    fireShortcut(h, 'Arrange Next', windows[2]);
+    const [w0, w1, w2] = windows;
+    const writes = [w0.geometryWrites, w1.geometryWrites, w2.geometryWrites];
+    w2.move = true;
+    w2.interactiveMoveResizeStarted.emit();
+    w2.frameGeometry = {x: 640, y: 120, width: 300, height: 300};
+    h.workspace.cursorPos = {x: 650, y: 130};
+    w2.interactiveMoveResizeFinished.emit();
+    w2.move = false;
+    assert.deepEqual(rectOf(w2), [640, 120, 300, 300]);
+    assert.equal(w2.geometryWrites, writes[2] + 1);
+    assert.equal(w1.geometryWrites, writes[1]);
+    assert.equal(w0.geometryWrites, writes[0]);
+});
+
+test('windows outside the group stay put, also arrivals, until release', () => {
+    const h = harness(gapped);
+    const windows = activatedWindows(h, 3);
+    fireShortcut(h, 'Arrange Next', windows[2]);
+    const outside = windows[0];
+    const before = [outside.geometryWrites, rectOf(outside)];
+    const late = makeWindow('late');
+    h.add(late);
+    assert.equal(late.geometryWrites, 0);
+    fireShortcut(h, 'Layout Columns', windows[2]);
+    assert.equal(late.geometryWrites, 0);
+    assert.deepEqual([outside.geometryWrites, rectOf(outside)], before);
+    fireShortcut(h, 'Arrange Release', windows[2]);
+    const row = [outside, late, windows[1], windows[2]].map(rectOf);
+    row.forEach(rect => assert.deepEqual([rect[1], rect[3]], [8, 785]));
+    assert.ok(row[0][0] < row[1][0] && row[1][0] < row[2][0] && row[2][0] < row[3][0]);
+});
+
+test('a template with fewer slots hands extra windows back and keeps their place', () => {
+    const h = harness(gapped);
+    const [w0, w1, w2] = activatedWindows(h, 3);
+    for (let press = 0; press < 4; press++) { fireShortcut(h, 'Arrange Next', w2); }
+    fireShortcut(h, 'Arrange Previous', w2);
+    assert.deepEqual(rectOf(w2), slotRects['golden-split'][0]);
+    assert.deepEqual(rectOf(w1), slotRects['golden-split'][1]);
+    assert.deepEqual(rectOf(w0), slotRects['trio-columns'][2]);
+    fireShortcut(h, 'Arrange Release', w2);
+    assert.deepEqual([w0, w1, w2].map(rectOf), layoutRects.master[3]);
+});
+
+test('an arranged window moved to another output leaves the group as a floating one', () => {
+    const h = harness(gapped);
+    const [w0, w1] = activatedWindows(h, 2);
+    fireShortcut(h, 'Arrange Next', w1);
+    w0.output = 'DP-2';
+    w0.outputChanged.emit();
+    const moved = rectOf(w0);
+    fireShortcut(h, 'Arrange Reapply', w1);
+    assert.deepEqual(rectOf(w0), moved);
+    assert.deepEqual(rectOf(w1), slotRects['pair-centred'][0]);
+});
+
+test('arranged windows are saved as floating with their remembered rectangle', () => {
+    const h = harness({manageClasses: 'editor', settleSeconds: 0, gapInner: 8, gapOuter: 8},
+        {dbus: {reply: '{}'}});
+    const [w0, w1] = activatedWindows(h, 2);
+    fireShortcut(h, 'Arrange Next', w1);
+    h.advance(2000);
+    const calls = h.dbusCalls.filter(call => call.method === 'Set');
+    const records = JSON.parse(calls[calls.length - 1].args[0]).records;
+    assert.equal(records.length, 2);
+    records.forEach(record => assert.equal(record.mode, 'float'));
+    assert.ok(records.every(record => record.floatGeom.width > 0));
 });

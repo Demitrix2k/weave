@@ -9,6 +9,7 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 dist="$root/script/dist"
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
+{
 cat \
     "$root/core/geometry.js" \
     "$root/core/tree.js" \
@@ -17,8 +18,11 @@ cat \
     "$root/core/arrangement.js" \
     "$root/core/context.js" \
     "$root/core/persist.js" \
-    "$root/core/index.js" \
-    "$root/script/src/adapter.js" > "$tmp"
+    "$root/core/index.js"
+# The adapter cannot read files, so the arrangement templates are inlined as data.
+printf '\nvar WEAVE_TEMPLATES = %s;\n' "$(cat "$root/core/templates.json")"
+cat "$root/script/src/adapter.js"
+} > "$tmp"
 if command -v sha256sum >/dev/null 2>&1; then
     hash=$(sha256sum "$tmp" | cut -c1-8)
 else

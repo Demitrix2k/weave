@@ -88,6 +88,11 @@ if [ "$DRY_RUN" = true ]; then
     say "DRY-RUN: invoke Toggle Float; load check-s5.js; run; wait; unload"
     say "DRY-RUN: invoke Toggle Float; send-kcalc.js; select-master.js; invoke Dock Left"
     say "DRY-RUN: load check-s6.js; run /Scripting/Script<ID>; wait; unload"
+    say "DRY-RUN: invoke Weave Layout Master; order-s7.js prints the window ids"
+    say "DRY-RUN: invoke Weave Layout Columns/Monocle/Spiral/Master; check-s7a..d.js"
+    say "DRY-RUN: activate-live.js x3 (known order); invoke Weave Arrange Next; check-s8a.js"
+    say "DRY-RUN: move-s8.js; invoke Weave Arrange Reapply; check-s8b.js"
+    say "DRY-RUN: invoke Weave Arrange Release; check-s8c.js"
     say "DRY-RUN: journalctl result parsing, summary table, optional JSON array"
     say "DRY-RUN: kill <recorded PID> and wait <recorded PID> for each launch"
     say "DRY-RUN: disable/remove Weave, delete four harness config keys, reconfigure"
@@ -109,6 +114,9 @@ cat "$ROOT/core/geometry.js" "$ROOT/core/tree.js" "$ROOT/core/snap.js" \
     "$ROOT/core/stage.js" "$ROOT/core/arrangement.js" "$ROOT/core/context.js" \
     "$ROOT/core/index.js" "$JS_DIR/expected.js" \
     > "$TMP_DIR/check-prefix.js"
+printf '\nvar WEAVE_LIVE_TEMPLATES = ' >> "$TMP_DIR/check-prefix.js"
+cat "$ROOT/core/templates.json" >> "$TMP_DIR/check-prefix.js"
+printf ';\n' >> "$TMP_DIR/check-prefix.js"
 
 run sh "$ROOT/script/build.sh"
 qdbus6 org.kde.KWin /Scripting unloadScript weave >/dev/null 2>&1 || true
@@ -210,7 +218,12 @@ run_script() {
         cat "$TMP_DIR/check-prefix.js" >> "$TMP_DIR/$name.js"
         cat "$JS_DIR/$source_file" >> "$TMP_DIR/$name.js"
     else
-        cat "$TMP_DIR/check-prefix.js" "$JS_DIR/$source_file" > "$TMP_DIR/$name.js"
+        cat "$TMP_DIR/check-prefix.js" > "$TMP_DIR/$name.js"
+        case "$source_file" in
+            check-s7*|check-s8*|activate-live.js|move-s8.js)
+                printf '%s\n' "$LIVE_PRE" >> "$TMP_DIR/$name.js" ;;
+        esac
+        cat "$JS_DIR/$source_file" >> "$TMP_DIR/$name.js"
     fi
     load_and_run "$TMP_DIR/$name.js" "$name" "$scenario"
 }
@@ -258,10 +271,12 @@ snapshot_first_size() {
     [ -n "$S5_WIDTH" ] && [ -n "$S5_HEIGHT" ]
 }
 
+SCENARIOS="S1 S2 S3 S4 S5 S6 S7a S7b S7c S7d S8a S8b S8c"
+
 summary() {
     statuses=
     failures=0
-    for scenario in S1 S2 S3 S4 S5 S6; do
+    for scenario in $SCENARIOS; do
         line=$(rg -F "WEAVE_LIVE {\"scenario\":\"$scenario\"" \
             "$TMP_DIR/results" 2>/dev/null | tail -n 1 || true)
         status=$(printf '%s\n' "$line" | sed -n 's/.*"status":"\(PASS\|FAIL\)".*/\1/p')
@@ -272,11 +287,16 @@ summary() {
     say "Summary table"
     say "Scenario | Status"
     index=1
-    for status in $statuses; do say "S$index | $status"; index=$((index + 1)); done
+    for scenario in $SCENARIOS; do
+        status=$(printf '%s\n' "$statuses" | cut -d' ' -f$((index + 1)))
+        say "$scenario | $status"
+        index=$((index + 1))
+    done
     if [ "$JSON" = true ]; then
         node -e 'const fs=require("fs");const rows=fs.readFileSync(process.argv[1],"utf8")
             .trim().split(/\n/).filter(Boolean).map(x=>JSON.parse(x.slice(11)));
-            const keep={};rows.forEach(x=>{if(/^S[1-6]$/.test(x.scenario))keep[x.scenario]=x;});
+            const keep={};rows.forEach(x=>{
+                if(/^S[1-8][a-d]?$/.test(x.scenario))keep[x.scenario]=x;});
             process.stdout.write(JSON.stringify(Object.keys(keep).sort().map(k=>keep[k]))+"\n");' \
             "$TMP_DIR/results"
     fi
@@ -312,6 +332,58 @@ send_all send-kcalc.js weave-live-restore-left-s6
 run_script select-master.js weave-live-select-s6 ''
 invoke "Weave Dock Left"
 run_script check-s6.js weave-live-check-s6 S6
+
+# S7: layouts per context. Reset to master first so the window order is known.
+LIVE_PRE=
+invoke "Weave Layout Master"
+sleep 1
+LAST_STEP_LINE=
+run_script order-s7.js weave-live-order-s7 ''
+LIVE_IDS=${LAST_STEP_LINE#WEAVE_LIVE_STEP ids }
+live_js=
+for live_id in $LIVE_IDS; do
+    [ -z "$live_js" ] && live_js="\"$live_id\"" || live_js="$live_js,\"$live_id\""
+done
+LIVE_PRE="var liveIds = [$live_js];"
+say "S7/S8 window order (master layout): $LIVE_IDS"
+invoke "Weave Layout Columns"
+sleep 0.7
+run_script check-s7a.js weave-live-check-s7a S7a
+invoke "Weave Layout Monocle"
+sleep 0.7
+run_script check-s7b.js weave-live-check-s7b S7b
+invoke "Weave Layout Spiral"
+sleep 0.7
+run_script check-s7c.js weave-live-check-s7c S7c
+invoke "Weave Layout Master"
+sleep 0.7
+run_script check-s7d.js weave-live-check-s7d S7d
+
+# S8: arrangements. Activation order is index 1, 2, 0 (the last one is active).
+for activate_index in 1 2 0; do
+    LIVE_PRE="var liveIds = [$live_js]; var activateIndex = $activate_index;"
+    run_script activate-live.js weave-live-activate-s8-$activate_index ''
+    sleep 0.3
+done
+LIVE_PRE="var liveIds = [$live_js];"
+invoke "Weave Arrange Next"
+sleep 0.7
+run_script check-s8a.js weave-live-check-s8a S8a
+run_script move-s8.js weave-live-move-s8 ''
+sleep 1
+run_script check-s8m.js weave-live-check-s8m S8m
+case "$LAST_STEP_LINE" in
+    *'"status":"PASS"'*) moved_ok=true ;;
+    *) moved_ok=false ;;
+esac
+LIVE_PRE="var liveIds = [$live_js]; var movedOk = $moved_ok;"
+invoke "Weave Arrange Reapply"
+sleep 0.7
+run_script check-s8b.js weave-live-check-s8b S8b
+LIVE_PRE="var liveIds = [$live_js];"
+invoke "Weave Arrange Release"
+sleep 0.7
+run_script check-s8c.js weave-live-check-s8c S8c
 # Let the 2 s save debounce fire before cleanup unloads the script.
 sleep 3
 summary

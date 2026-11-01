@@ -22,11 +22,17 @@ its private event queue changes when recording or consuming expectations.
   tolerance)` returns `{tree, gap}` for non-overlapping guillotine partitions,
   where `gap` is the inferred common inner gap, or `null` when inference fails.
 - snap: snapRect(action, workArea, gaps, current), all specified actions.
+- tree layouts by name: LAYOUTS (`master`, `columns`, `monocle`, `spiral`),
+  RESERVED_LAYOUTS (`stage`), validLayout(name), generate(name, list,
+  {masterRatio, nMaster}) (unknown names fall back to master-stack),
+  cycleLayout(name, step) and leafOrder(tree) (window IDs, first child first).
 - stage: addWindow, removeWindow, promote, cycle, pin, unpin, layout.
   State-changing functions take (state, id), cycle takes (state, direction).
 - arrangement: validateTemplate returns boolean; applyTemplate returns rectangles
   in slot order; assign returns {slots: window IDs or null, unfilled: indices,
-  overflow: excess IDs}. Templates are {slots: [{x,y,w,h}]}.
+  overflow: excess IDs}. Templates are {slots: [{x,y,w,h}]}. pickWindows(activeId,
+  [{id,tick,seq}], n) returns the active ID, then the most recent (highest tick),
+  then never-activated (tick 0) by seq; cycleName(names, current, step) wraps.
 - context: toFloat(ctx,id,geometry?), toTile(ctx,id,geometry?),
   toArrange(ctx,id,groupId,geometry?), layoutContext(ctx,area,params).
   Context has windows (array), tree, layout ('stage' or tree by default), stage,

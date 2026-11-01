@@ -112,6 +112,32 @@
         return {slots, unfilled, overflow: windowIds.slice(slots.length)};
     }
 
-    const api = {applyTemplate, assign, validateTemplate};
+    function byRecency(first, second) {
+        return ((second.tick || 0) - (first.tick || 0)) || (first.seq - second.seq);
+    }
+
+    // Window IDs to place in a template: the active window first, then the most
+    // recently activated; never-activated windows (tick 0) last, in arrival (seq) order.
+    function pickWindows(activeId, entries, count) {
+        const active = entries.filter(entry => entry.id === activeId);
+        const rest = entries.filter(entry => entry.id !== activeId).sort(byRecency);
+        return active.concat(rest).slice(0, Math.max(0, count)).map(entry => entry.id);
+    }
+
+    // Name `step` places after `current` in `names`, wrapping; unknown current
+    // starts at the first name (forward) or the last (backward).
+    function cycleName(names, current, step) {
+        if (!names.length) {
+            return null;
+        }
+        const index = names.indexOf(current);
+        if (index < 0) {
+            return step > 0 ? names[0] : names[names.length - 1];
+        }
+        const count = names.length;
+        return names[((index + step) % count + count) % count];
+    }
+
+    const api = {applyTemplate, assign, validateTemplate, pickWindows, cycleName};
     return Object.assign({}, api, {arrangement: api});
 });

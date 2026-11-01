@@ -34,10 +34,12 @@ var KCALC_RESOURCE_CLASS = "org.kde.kcalc";
         return rounded(window.frameGeometry);
     }
 
-    function emit(scenario, pass, expected, actualRects) {
+    function emit(scenario, pass, expected, actualRects, extra) {
         var line = "WEAVE_LIVE {\"scenario\":\"" + scenario + "\",\"status\":\"" +
             (pass ? "PASS" : "FAIL") + "\",\"expected\":" +
-            JSON.stringify(expected) + ",\"actual\":" + JSON.stringify(actualRects) + "}";
+            JSON.stringify(expected) + ",\"actual\":" + JSON.stringify(actualRects);
+        if (extra) { line += ",\"info\":" + JSON.stringify(extra); }
+        line += "}";
         if (api.output) { api.output(line); }
         else if (typeof print === "function") { print(line); }
     }
@@ -105,9 +107,7 @@ var KCALC_RESOURCE_CLASS = "org.kde.kcalc";
                     group.desktop));
                 expected = expected.concat(layout);
                 actualRects = actualRects.concat(group.windows.map(actual));
-                layout.forEach(function (rect, index) {
-                    if (!equalRect(rect, actual(group.windows[index]))) { pass = false; }
-                });
+                if (!sameRectSet(layout, group.windows.map(actual))) { pass = false; }
             });
             var expectedGroups = scenario === "S2" ? 2 : 1;
             if (keys.length !== expectedGroups) { pass = false; }
@@ -122,9 +122,7 @@ var KCALC_RESOURCE_CLASS = "org.kde.kcalc";
                 expected = tile(ids3, workArea(targetWorkspace, tiled.output,
                     tiled.desktop));
                 actualRects = tiled.windows.map(actual);
-                pass = expected.every(function (rect, index) {
-                    return equalRect(rect, actualRects[index]);
-                });
+                pass = sameRectSet(expected, actualRects);
             }
             pass = pass && priorSnapPassed === true;
         } else if (scenario === "S5") {
@@ -184,7 +182,154 @@ var KCALC_RESOURCE_CLASS = "org.kde.kcalc";
             expected: expected, actual: actualRects};
     }
 
+    var GAPS = {outer: 8, inner: 8};
+    // Activation order the harness applies before S8, as indices into the id list.
+    var ACTIVATION_ORDER = [1, 2, 0];
+
+    // Windows for the ids given by the harness (master-layout order), or null.
+    function liveContext(workspace, ids) {
+        var all = kcalcWindows(workspace);
+        var found = ids.map(function (id) {
+            return all.filter(function (window) {
+                return String(window.internalId) === id;
+            })[0];
+        });
+        if (!found.length || found.some(function (window) { return !window; })) {
+            return null;
+        }
+        var desktop = desktopFor(workspace, found[0]);
+        return {windows: found, ids: ids.slice(), desktop: desktop,
+            area: workArea(workspace, found[0].output, desktop)};
+    }
+
+    // Windows are launched together, so their arrival order is not the windowList
+    // order: compare the set of rects, not the pairing.
+    function sameRectSet(expected, actualRects) {
+        var key = function (rect) { return rectArray(rect).join(","); };
+        var want = expected.map(key).sort();
+        var have = actualRects.map(key).sort();
+        return want.length === have.length && want.every(function (item, index) {
+            return item === have[index];
+        });
+    }
+
+    function layoutRects(name, ids, area) {
+        var tree = coreApi.tree.generate(name, ids.slice(), {masterRatio: 0.6});
+        var rects = coreApi.tree.layout(tree, area, GAPS);
+        return ids.map(function (id) { return rounded(rects[id]); });
+    }
+
+    function allEqual(expected, actualRects) {
+        return expected.length === actualRects.length && expected.every(
+            function (rect, index) { return equalRect(rect, actualRects[index]); });
+    }
+
+    function layoutStep(scenario, context, workspace) {
+        var names = {S7a: "columns", S7b: "monocle", S7c: "spiral", S7d: "master"};
+        var name = names[scenario];
+        var expected = layoutRects(name, context.ids, context.area);
+        var actualRects = context.windows.map(actual);
+        var pass = allEqual(expected, actualRects);
+        if (name === "columns") {
+            var sorted = actualRects.slice().sort(function (one, two) {
+                return one.x - two.x;
+            });
+            sorted.forEach(function (rect, index) {
+                if (Math.abs(rect.width - sorted[0].width) > 4) { pass = false; }
+                if (index && rect.x - (sorted[index - 1].x + sorted[index - 1].width) !==
+                        GAPS.inner) { pass = false; }
+            });
+        }
+        if (name === "monocle") {
+            var full = {x: context.area.x + GAPS.outer, y: context.area.y + GAPS.outer,
+                width: context.area.width - 2 * GAPS.outer,
+                height: context.area.height - 2 * GAPS.outer};
+            if (!actualRects.every(function (rect) { return equalRect(rect, full); })) {
+                pass = false;
+            }
+        }
+        var info = name === "monocle" ?
+            {raiseWindow: typeof workspace.raiseWindow} : undefined;
+        emit(scenario, pass, expected, actualRects, info);
+        return pass;
+    }
+
+    function arrangedExpected(context, templates) {
+        var names = Object.keys(templates);
+        var template = templates[names[0]];
+        var entries = context.ids.map(function (id, index) {
+            return {id: id, seq: index + 1,
+                tick: ACTIVATION_ORDER.indexOf(index) + 1};
+        });
+        var chosen = coreApi.arrangement.pickWindows(context.ids[0], entries,
+            template.slots.length);
+        var slots = coreApi.arrangement.assign(template, chosen).slots;
+        var rects = coreApi.arrangement.applyTemplate(template, context.area, GAPS);
+        var tiled = layoutRects("master", context.ids, context.area);
+        return {chosen: chosen, expected: context.ids.map(function (id, index) {
+            var slot = slots.indexOf(id);
+            return slot < 0 ? tiled[index] : rounded(rects[slot]);
+        })};
+    }
+
+    function arrangeStep(scenario, context, templates) {
+        var actualRects = context.windows.map(actual);
+        if (scenario !== "S8c") {
+            var arranged = arrangedExpected(context, templates);
+            var pass = allEqual(arranged.expected, actualRects);
+            emit(scenario, pass, arranged.expected, actualRects,
+                {chosen: arranged.chosen});
+            return pass;
+        }
+        // Release: the unchosen window keeps its place in the tree, the released
+        // members rejoin after it in arrival order (unknown here: try both).
+        var picked = arrangedExpected(context, templates).chosen;
+        var rest = context.ids.filter(function (id) { return picked.indexOf(id) < 0; });
+        var orders = [rest.concat(picked), rest.concat(picked.slice().reverse())];
+        var passes = false;
+        var expected = [];
+        orders.forEach(function (order) {
+            var tiled = layoutRects("master", order, context.area);
+            var byId = {};
+            order.forEach(function (id, index) { byId[id] = tiled[index]; });
+            var candidate = context.ids.map(function (id) { return byId[id]; });
+            if (!passes) { expected = candidate; }
+            if (!passes && allEqual(candidate, actualRects)) { passes = true; }
+        });
+        emit(scenario, passes, expected, actualRects, {released: picked});
+        return passes;
+    }
+
+    // S8 precondition: the window moved by move-s8.js is off its slot.
+    function movedStep(context, templates) {
+        var arranged = arrangedExpected(context, templates);
+        var actualRects = context.windows.map(actual);
+        var pass = !equalRect(arranged.expected[2], actualRects[2]);
+        emit("S8m", pass, arranged.expected[2], actualRects[2]);
+        return pass;
+    }
+
+    function runLive(scenario, targetWorkspace, ids, engine, templates, movedOk) {
+        coreApi = engine || coreApi;
+        var context = liveContext(targetWorkspace, ids || []);
+        var pass = false;
+        if (context && scenario === "S8m") {
+            pass = movedStep(context, templates);
+        } else if (context && scenario === "S8b" && movedOk === false) {
+            emit(scenario, false, [], context.windows.map(actual),
+                {error: "precondition: window was not displaced"});
+        } else if (!context) {
+            emit(scenario, false, [], [], {error: "windows missing"});
+        } else if (scenario.indexOf("S7") === 0) {
+            pass = layoutStep(scenario, context, targetWorkspace);
+        } else {
+            pass = arrangeStep(scenario, context, templates);
+        }
+        return {scenario: scenario, status: pass ? "PASS" : "FAIL"};
+    }
+
     api = {
+        runLive: runLive,
         resourceClass: KCALC_RESOURCE_CLASS,
         rounded: rounded,
         equalRect: equalRect,

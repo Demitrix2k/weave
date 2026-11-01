@@ -21,6 +21,11 @@
     var STATE_SERVICE = "org.weave.State";
     var BUILD_ID = "@@BUILD_ID@@";
     var MIN_PANE = 100;
+    var templates = typeof WEAVE_TEMPLATES === "undefined" ? {} : WEAVE_TEMPLATES;
+    var activation = new Map();
+    var activationTick = 0;
+    var arrivalSeq = 0;
+    var groupSeq = 0;
 
     function property(object, name) {
         try { return object == null ? undefined : object[name]; }
@@ -93,7 +98,9 @@
                 ids: [],
                 tree: null,
                 adopted: false,
-                innerGap: null
+                innerGap: null,
+                layout: config.defaultLayout,
+                groups: []
             };
             contexts.set(key, context);
         }
@@ -101,7 +108,7 @@
     }
 
     function discardIfEmpty(context) {
-        if (context.ids.length) { return; }
+        if (context.ids.length || context.groups.length) { return; }
         contexts.delete(context.key);
     }
 
@@ -131,9 +138,11 @@
             dropNativeTiles: configBoolean(readConfigValue("dropNativeTiles", true), true),
             persist: configBoolean(readConfigValue("persist", true), true),
             masterRatio: Number(readConfigValue("masterRatio", 0.6)),
+            defaultLayout: String(readConfigValue("defaultLayout", "master")),
             logLevel: String(readConfigValue("logLevel", "off"))
         };
         if (config.masterRatio < 0 || config.masterRatio > 1) { config.masterRatio = 0.6; }
+        if (!api.tree.validLayout(config.defaultLayout)) { config.defaultLayout = "master"; }
         if (["off", "info", "debug"].indexOf(config.logLevel) < 0) {
             config.logLevel = "off";
         }
@@ -178,6 +187,7 @@
     }
 
     function applyContext(context) {
+        if (context.groups.length) { return; }
         var rects = api.tree.layout(context.tree, workArea(context), contextGaps(context));
         context.ids.forEach(function (id) {
             var state = states.get(id);
@@ -200,7 +210,8 @@
     }
 
     function rebuild(context) {
-        context.tree = api.tree.masterStack(context.ids.slice(), 1, config.masterRatio);
+        context.tree = api.tree.generate(context.layout, context.ids.slice(),
+            {masterRatio: config.masterRatio});
         context.adopted = false;
         context.innerGap = null;
     }
@@ -328,7 +339,7 @@
         var window = state.window;
         return {
             key: api.keyOf(property(window, "resourceClass"), property(window, "caption")),
-            mode: state.mode === "float" ? "float" : "tiled",
+            mode: state.mode === "tiled" ? "tiled" : "float",
             floatGeom: state.floatGeometry,
             geom: roundedRect(property(window, "frameGeometry")),
             ctx: {
@@ -395,7 +406,10 @@
             floatWorkArea: workArea(context),
             expected: new api.ExpectedGeometry(),
             drag: null,
-            reassigning: false
+            reassigning: false,
+            seq: ++arrivalSeq,
+            prevMode: null,
+            groupId: null
         };
     }
 
@@ -479,6 +493,15 @@
         var context = contextFor(window);
         var state = newState(window, context, "tiled", null);
         states.set(id, state);
+        joinTiling(context, id);
+        watchWindow(state);
+        applyContext(context);
+        forgetClosed(window);
+        scheduleSave();
+        log("info", "managed " + id + " in " + context.key);
+    }
+
+    function joinTiling(context, id) {
         if (context.adopted && context.tree) {
             var existing = context.ids[context.ids.length - 1];
             context.tree = api.tree.insert(context.tree, id, existing, "right");
@@ -487,11 +510,6 @@
             context.ids.push(id);
             rebuild(context);
         }
-        watchWindow(state);
-        applyContext(context);
-        forgetClosed(window);
-        scheduleSave();
-        log("info", "managed " + id + " in " + context.key);
     }
 
     function removeWindow(window) {
@@ -499,13 +517,20 @@
         if (id === null) { return; }
         candidates.delete(id);
         candidateWatches.delete(id);
+        activation.delete(id);
         var state = states.get(id);
         if (!state) { return; }
         var context = state.context;
         rememberClosed(state);
+        if (state.mode === "arranged") { clearSlot(context, state); }
         context.ids = context.ids.filter(function (item) { return item !== id; });
         states.delete(id);
         state.expected.clear(id);
+        if (state.mode === "arranged") {
+            discardIfEmpty(context);
+            scheduleSave();
+            return;
+        }
         if (context.adopted) {
             context.tree = api.tree.remove(context.tree, id);
         } else {
@@ -617,6 +642,7 @@
         }
         state.reassigning = true;
         try {
+            if (state.mode === "arranged") { detachFromGroup(state); }
             if (state.floatGeometry && previous.outputName !== next.outputName) {
                 var oldArea = workArea(previous);
                 var newArea = workArea(next);
@@ -741,12 +767,15 @@
     function toggleFloat() {
         var state = activeState();
         if (!state) { return; }
-        if (state.mode === "tiled") { floating(state); } else { tiling(state); }
+        if (state.mode === "tiled") { floating(state); }
+        else if (state.mode === "arranged") { detachFromGroup(state); }
+        else { tiling(state); }
     }
 
     function snap(action) {
         var state = activeState();
         if (!state) { return; }
+        if (state.mode === "arranged") { detachFromGroup(state); }
         if (state.mode === "tiled") { floating(state); }
         var area = workArea(state.context);
         var rect = api.snapRect(action, area, contextGaps(state.context));
@@ -781,11 +810,242 @@
                 tiling(state);
                 return;
             }
+            if (state.mode === "arranged") {
+                applyGroup(state.context);
+                return;
+            }
             rebuild(state.context);
             applyContext(state.context);
         });
         shortcut("Dock Left", function () { dock("left"); });
         shortcut("Dock Right", function () { dock("right"); });
+        shortcut("Layout Next", function () { cycleLayout(1); });
+        shortcut("Layout Previous", function () { cycleLayout(-1); });
+        api.tree.LAYOUTS.forEach(function (name) {
+            var label = name.replace(/^./, function (c) { return c.toUpperCase(); });
+            shortcut("Layout " + label, function () { switchLayout(name); });
+        });
+        shortcut("Arrange Next", function () { arrangeStep(1); });
+        shortcut("Arrange Previous", function () { arrangeStep(-1); });
+        shortcut("Arrange Reapply", function () { reapplyGroup(); });
+        shortcut("Arrange Release", function () { releaseCommand(); });
+    }
+
+    function onActivated(window) {
+        settleEvent();
+        var id = windowId(window);
+        if (id === null) { return; }
+        activationTick++;
+        activation.set(id, activationTick);
+        var state = states.get(id);
+        if (state && state.mode === "tiled" && state.context.layout === "monocle") {
+            raiseWindow(window);
+        }
+    }
+
+    function raiseWindow(window) {
+        if (typeof workspace.raiseWindow !== "function") { return; }
+        try { workspace.raiseWindow(window); }
+        catch (error) { logError("raise window", error); }
+    }
+
+    function activeContext() {
+        var state = activeState();
+        return state ? contextFor(state.window) : null;
+    }
+
+    function orderedIds(context) {
+        var inTree = api.tree.leafOrder(context.tree).filter(function (id) {
+            return context.ids.indexOf(id) >= 0;
+        });
+        var missing = context.ids.filter(function (id) { return inTree.indexOf(id) < 0; });
+        return inTree.concat(missing);
+    }
+
+    function switchLayout(name) {
+        var context = activeContext();
+        if (!context || !api.tree.validLayout(name)) { return; }
+        context.layout = name;
+        context.ids = orderedIds(context);
+        rebuild(context);
+        log("info", "layout " + context.key + " -> " + name);
+        if (context.ids.length) { applyContext(context); }
+        var state = activeState();
+        if (name === "monocle" && state && state.mode === "tiled") {
+            raiseWindow(state.window);
+        }
+    }
+
+    function cycleLayout(step) {
+        var context = activeContext();
+        if (!context) { return; }
+        switchLayout(api.tree.cycleLayout(context.layout, step));
+    }
+
+    function copyGroup(group) {
+        return Object.assign({}, group, {assignments: group.assignments.slice()});
+    }
+
+    function coreContext(context, groups) {
+        var windows = [];
+        states.forEach(function (state) {
+            if (state.context.key !== context.key) { return; }
+            windows.push({
+                id: state.id,
+                mode: state.mode,
+                floatGeom: state.floatGeometry,
+                groupId: state.groupId
+            });
+        });
+        return {windows: windows, tree: context.tree, groups: groups.map(copyGroup)};
+    }
+
+    function groupMemberIds(context) {
+        var ids = [];
+        context.groups.forEach(function (group) {
+            group.assignments.forEach(function (id) {
+                if (id !== null) { ids.push(id); }
+            });
+        });
+        return ids;
+    }
+
+    function applyGroup(context) {
+        var group = context.groups[0];
+        if (!group) { return; }
+        var rects = api.arrangement.applyTemplate(group.template, workArea(context),
+            contextGaps(context));
+        group.assignments.forEach(function (id, index) {
+            var state = id === null ? null : states.get(id);
+            if (!state || state.mode !== "arranged" || state.groupId !== group.id) { return; }
+            if (!onContextOutput(state.window, context)) { return; }
+            setGeometry(state.window, rects[index]);
+        });
+    }
+
+    // Empties the window's slot; the group is dropped (and tiling resumes) only
+    // when no slot has a window any more.
+    function clearSlot(context, state) {
+        var next = api.toFloat(coreContext(context, context.groups), state.id);
+        context.groups = next.groups.filter(function (group) {
+            return group.assignments.some(function (id) { return id !== null; });
+        });
+        if (!context.groups.length && context.ids.length) { applyContext(context); }
+    }
+
+    // Arranged -> floating, left where it is; also used when it leaves the context.
+    function detachFromGroup(state) {
+        var context = state.context;
+        state.floatGeometry = roundedRect(property(state.window, "frameGeometry"));
+        state.floatWorkArea = workArea(context);
+        clearSlot(context, state);
+        state.mode = "float";
+        state.groupId = null;
+        state.prevMode = null;
+        scheduleSave();
+    }
+
+    function leaveArrangement(state) {
+        var wasTiled = state.prevMode === "tiled";
+        state.groupId = null;
+        state.prevMode = null;
+        if (wasTiled) {
+            state.mode = "tiled";
+            joinTiling(state.context, state.id);
+            return;
+        }
+        state.mode = "float";
+        state.floatGeometry = restoreFloatGeometry(state);
+        setGeometry(state.window, state.floatGeometry);
+    }
+
+    // Arrival order, so windows rejoining the tiling keep their old relative order.
+    function inArrivalOrder(ids) {
+        return ids.slice().sort(function (a, b) { return states.get(a).seq - states.get(b).seq; });
+    }
+
+    function templateNames() {
+        return Object.keys(templates);
+    }
+
+    function candidateEntries(context) {
+        var entries = [];
+        states.forEach(function (state) {
+            if (state.context.key !== context.key) { return; }
+            entries.push({id: state.id, tick: activation.get(state.id) || 0, seq: state.seq});
+        });
+        return entries;
+    }
+
+    function arrangeWith(name) {
+        var template = templates[name];
+        var active = activeState();
+        if (!template || !active) { return; }
+        var context = contextFor(active.window);
+        var chosen = api.arrangement.pickWindows(active.id, candidateEntries(context),
+            template.slots.length);
+        var old = context.groups[0];
+        var members = old ? groupMemberIds(context) : [];
+        inArrivalOrder(members).forEach(function (id) {
+            if (chosen.indexOf(id) < 0) { leaveArrangement(states.get(id)); }
+        });
+        var group = {id: "g" + (++groupSeq), name: name, template: template,
+            assignments: api.arrangement.assign(template, chosen).slots};
+        var wasTiled = [];
+        var core = coreContext(context, [group]);
+        chosen.forEach(function (id) {
+            var state = states.get(id);
+            state.context = context;
+            var frame = null;
+            if (state.mode !== "arranged") {
+                state.prevMode = state.mode;
+                if (state.mode === "tiled") { wasTiled.push(id); }
+                if (state.mode === "float") {
+                    frame = roundedRect(property(state.window, "frameGeometry"));
+                }
+            }
+            core = api.toArrange(core, id, group.id, frame || undefined);
+        });
+        chosen.forEach(function (id) {
+            var state = states.get(id);
+            var record = core.windows.filter(function (item) { return item.id === id; })[0];
+            state.mode = "arranged";
+            state.groupId = group.id;
+            if (record.floatGeom) { state.floatGeometry = roundedRect(record.floatGeom); }
+        });
+        context.ids = context.ids.filter(function (id) { return wasTiled.indexOf(id) < 0; });
+        if (context.adopted) { context.tree = core.tree; } else { rebuild(context); }
+        group.assignments = core.groups[0].assignments;
+        context.groups = [group];
+        contexts.set(context.key, context);
+        log("info", "arrange " + context.key + " -> " + name);
+        applyGroup(context);
+        scheduleSave();
+    }
+
+    function arrangeStep(step) {
+        var context = activeContext();
+        if (!context) { return; }
+        var group = context.groups[0];
+        var name = api.arrangement.cycleName(templateNames(), group ? group.name : null, step);
+        if (name !== null) { arrangeWith(name); }
+    }
+
+    function reapplyGroup() {
+        var context = activeContext();
+        if (context) { applyGroup(context); }
+    }
+
+    function releaseCommand() {
+        var context = activeContext();
+        var group = context && context.groups[0];
+        if (!group) { return; }
+        var ids = inArrivalOrder(groupMemberIds(context));
+        context.groups = [];
+        ids.forEach(function (id) { leaveArrangement(states.get(id)); });
+        log("info", "release " + context.key);
+        if (context.ids.length) { applyContext(context); }
+        scheduleSave();
     }
 
     function refreshConfig() {
@@ -822,7 +1082,7 @@
         Array.from(states.values()).forEach(function (state) { reassign(state); });
         Array.from(contexts.values()).forEach(function (context) {
             if (names.indexOf(context.outputName) >= 0) { return; }
-            context.ids.slice().forEach(function (id) {
+            context.ids.concat(groupMemberIds(context)).forEach(function (id) {
                 var state = states.get(id);
                 if (state) { reassign(state); }
             });
@@ -842,7 +1102,7 @@
             else { addWindow(window); }
         });
         connect(workspace, "windowRemoved", removeWindow);
-        connect(workspace, "windowActivated", settleEvent);
+        connect(workspace, "windowActivated", onActivated);
         connect(workspace, "aboutToQuit", aboutToQuit);
         connect(property(host, "qApp"), "aboutToQuit", aboutToQuit);
         connect(workspace, "screensChanged", outputsChanged);

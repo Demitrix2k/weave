@@ -30,6 +30,56 @@ Output and desktop reassignment appends the window to the destination's ordered 
 regenerates its master-stack tree; source contexts also regenerate unless their tree was
 adopted at startup or edited by a drag, resize, or dock action.
 
+## Layouts (`defaultLayout`, default `master`)
+
+Each context (output, desktop) has a layout: `master`, `columns`, `monocle` or
+`spiral` (`stage` is reserved for a later slice and is not implemented; an
+unknown or reserved `defaultLayout` falls back to `master`). New contexts start
+with `defaultLayout`; arrivals and reassignments regenerate the tree with the
+context's own generator. Shortcuts (all with empty default keys): `Weave Layout
+Next`, `Weave Layout Previous`, `Weave Layout Master`, `Weave Layout Columns`,
+`Weave Layout Monocle`, `Weave Layout Spiral`. A switch re-derives the tree from
+the current leaf order (so drag swaps survive), uses the same `masterRatio` and
+gaps as arrivals, clears the "user edited" state, applies the geometry and logs
+`layout <context key> -> <name>` at info level. Monocle gives every window the
+full work rectangle and raises the active window (and the newly activated one)
+when `workspace.raiseWindow` exists. A context forgets its layout once its last
+tiled window goes away.
+
+## Arrangements
+
+Shortcuts (empty default keys): `Weave Arrange Next`, `Weave Arrange Previous`
+(cycle through `core/templates.json` in file order, starting at the first, or the
+last for Previous), `Weave Arrange Reapply`, `Weave Arrange Release`. The build
+inlines `templates.json` as `WEAVE_TEMPLATES`, because a KWin script cannot read files.
+
+- Windows: the active window plus the N-1 most recently activated managed
+  windows of the same context (any mode), N being the template's slot count.
+  Never-activated windows rank last, in arrival order. Fewer windows than slots
+  leaves the extra slots empty.
+- Geometry: slot rectangles come from `arrangement.applyTemplate` on the work
+  area with the outer margin and inner gap (gaps only, no overlap).
+- Policy (v1): the group takes over the context. Its windows become mode
+  `arranged` and leave the tree. The other windows of the context are left
+  exactly where they are: tiled ones stay in the tree but the tiling is
+  suspended while a group exists (nothing is laid out, including arrivals and
+  layout switches, which only update the tree), so no tree-versus-group overlap
+  rules are needed. `Release` resumes tiling.
+- Arranged windows are not re-laid on drag. `Reapply` snaps the group back.
+  `Release` returns every member to the mode it had before (floated windows go
+  back to their remembered free rectangle, captured when the group was applied;
+  tiled ones rejoin the tree in arrival order and the context is laid out).
+- Applying another template re-picks the windows; members that drop out go back
+  to their previous mode (floated ones are restored, tiled ones rejoin the tree
+  but keep their position until tiling resumes).
+- `Toggle Float`, any `Snap` action, or moving the window to another output
+  detaches that one window: it becomes floating and stays where it is. Closing
+  an arranged window empties its slot; nothing else moves. When the last member
+  is gone the group is dropped and tiling resumes.
+- Persistence: the record format has only `float` and `tiled`, so arranged
+  windows are saved as `float` with their remembered free rectangle (the group
+  and slot are not persisted, and nothing is arranged on login).
+
 ## Persistence (`persist`, default true)
 
 KWin scripts have no file API, so the adapter keeps which windows were tiled or

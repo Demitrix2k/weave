@@ -311,6 +311,32 @@ function spiral(list) {
   }
   return build(0);
 }
+const LAYOUTS = [ 'master', 'columns', 'monocle', 'spiral' ];
+// Reserved for the Stage slice: not generated here, never cycled to.
+const RESERVED_LAYOUTS = [ 'stage' ];
+function validLayout(name) {
+  return LAYOUTS.indexOf(name) >= 0;
+}
+// Tree for a layout name; unknown and reserved names fall back to master-stack.
+function generate(name, list, params) {
+  params = params || {};
+  if (name === 'columns')
+    return columns(list);
+  if (name === 'monocle')
+    return monocle(list);
+  if (name === 'spiral')
+    return spiral(list);
+  return masterStack(list, params.nMaster, params.masterRatio);
+}
+function cycleLayout(name, step) {
+  const index = Math.max(0, LAYOUTS.indexOf(name));
+  const count = LAYOUTS.length;
+  return LAYOUTS[((index + step) % count + count) % count];
+}
+// Window IDs in tree order (first child before second).
+function leafOrder(t) {
+  return windowIds(t);
+}
 function infer(rectsById, area, tolerance) {
   tolerance = tolerance === undefined ? 2 : Math.max(0, tolerance);
   const entries = Object.keys(rectsById || {}).map(id => ({
@@ -426,7 +452,13 @@ const api = {
   columns,
   monocle,
   spiral,
-  infer
+  infer,
+  LAYOUTS,
+  RESERVED_LAYOUTS,
+  validLayout,
+  generate,
+  cycleLayout,
+  leafOrder
 };
 return Object.assign({}, api, {tree : api});
 });

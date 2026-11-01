@@ -26,6 +26,15 @@
     <entry name="masterRatio" type="Double">
       <default>0.6</default>
     </entry>
+    <entry name="defaultLayout" type="String">
+      <choices>
+        <choice name="master"/>
+        <choice name="columns"/>
+        <choice name="monocle"/>
+        <choice name="spiral"/>
+      </choices>
+      <default>master</default>
+    </entry>
     <entry name="logLevel" type="String">
       <choices>
         <choice name="off"/>
