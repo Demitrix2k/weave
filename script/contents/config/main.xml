@@ -20,6 +20,9 @@
     <entry name="dropNativeTiles" type="Bool">
       <default>true</default>
     </entry>
+    <entry name="persist" type="Bool">
+      <default>true</default>
+    </entry>
     <entry name="masterRatio" type="Double">
       <default>0.6</default>
     </entry>

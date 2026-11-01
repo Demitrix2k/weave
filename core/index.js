@@ -12,20 +12,23 @@
     const stageModule = dep('stage');
     const arrangementModule = dep('arrangement');
     const contextModule = dep('context');
+    const persistModule = dep('persist');
     const geometry = geometryModule.geometry || geometryModule;
     const tree = treeModule.tree || treeModule;
     const snap = snapModule.snap || snapModule;
     const stage = stageModule.stage || stageModule;
     const arrangement = arrangementModule.arrangement || arrangementModule;
     const context = contextModule.context || contextModule;
+    const persist = persistModule.persist || persistModule;
 
-    return Object.assign({}, geometry, snap, arrangement, context, {
+    return Object.assign({}, geometry, snap, arrangement, context, persist, {
         geometry,
         tree,
         snap,
         stage,
         arrangement,
         context,
+        persist,
         insert: tree.insert,
         remove: tree.remove,
         swap: tree.swap,

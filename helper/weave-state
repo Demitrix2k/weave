@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""Weave state helper: stores one JSON blob for the Weave KWin script.
+
+KWin scripts have no file API, so the script talks to this helper over the
+session bus (org.weave.State, /State): Get() -> s and Set(s). D-Bus activation
+starts it on the first call and it exits after IDLE_SECONDS without a call.
+"""
+import json
+import os
+import sys
+import time
+
+BUS_NAME = "org.weave.State"
+OBJECT_PATH = "/State"
+IDLE_SECONDS = 60
+MAX_BYTES = 1024 * 1024
+EMPTY = "{}"
+
+INTROSPECTION = """
+<node>
+  <interface name="org.weave.State">
+    <method name="Get"><arg type="s" direction="out" name="state"/></method>
+    <method name="Set"><arg type="s" direction="in" name="state"/></method>
+  </interface>
+</node>
+"""
+
+
+def default_path():
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(
+        os.path.expanduser("~"), ".local", "state")
+    return os.path.join(base, "weave", "state.json")
+
+
+class StateStore:
+    """File logic only; no D-Bus, so it can be tested without a bus."""
+
+    def __init__(self, path, max_bytes=MAX_BYTES):
+        self.path = path
+        self.max_bytes = max_bytes
+
+    def read(self):
+        try:
+            with open(self.path, "rb") as handle:
+                data = handle.read(self.max_bytes + 1)
+        except FileNotFoundError:
+            return EMPTY
+        except OSError:
+            return EMPTY
+        text = self._valid_text(data)
+        if text is None:
+            self._keep_bad()
+            return EMPTY
+        return text
+
+    def write(self, text):
+        data = self._encode(text)
+        directory = os.path.dirname(self.path)
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        tmp = "%s.%d.tmp" % (self.path, os.getpid())
+        try:
+            with open(tmp, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, self.path)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+
+    def _encode(self, text):
+        if not isinstance(text, str):
+            raise ValueError("state must be a string")
+        data = text.encode("utf-8")
+        if len(data) > self.max_bytes:
+            raise ValueError("state larger than %d bytes" % self.max_bytes)
+        if self._valid_text(data) is None:
+            raise ValueError("state is not a JSON object")
+        return data
+
+    def _valid_text(self, data):
+        if len(data) > self.max_bytes:
+            return None
+        try:
+            text = data.decode("utf-8")
+            value = json.loads(text)
+        except ValueError:
+            return None
+        return text if isinstance(value, dict) else None
+
+    def _keep_bad(self):
+        try:
+            os.replace(self.path, self.path + ".bad")
+        except OSError:
+            pass
+
+
+def run(store):
+    import gi
+    gi.require_version("Gio", "2.0")
+    from gi.repository import Gio, GLib
+
+    loop = GLib.MainLoop()
+    last_call = [time.monotonic()]
+
+    def on_method(connection, sender, path, interface, method, params, invocation):
+        last_call[0] = time.monotonic()
+        try:
+            if method == "Get":
+                invocation.return_value(GLib.Variant("(s)", (store.read(),)))
+            else:
+                store.write(params.unpack()[0])
+                invocation.return_value(None)
+        except (ValueError, OSError) as error:
+            invocation.return_dbus_error("org.weave.State.Error", str(error))
+
+    def on_bus(connection, name):
+        info = Gio.DBusNodeInfo.new_for_xml(INTROSPECTION).interfaces[0]
+        connection.register_object(OBJECT_PATH, info, on_method, None, None)
+
+    def on_lost(connection, name):
+        loop.quit()
+
+    def check_idle():
+        if time.monotonic() - last_call[0] >= IDLE_SECONDS:
+            loop.quit()
+            return False
+        return True
+
+    Gio.bus_own_name(Gio.BusType.SESSION, BUS_NAME, Gio.BusNameOwnerFlags.NONE,
+                     on_bus, None, on_lost)
+    GLib.timeout_add_seconds(5, check_idle)
+    loop.run()
+
+
+def main():
+    run(StateStore(default_path()))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

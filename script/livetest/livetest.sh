@@ -37,6 +37,8 @@ cleanup() {
         for pid in ${KCALC_PIDS-}; do wait "$pid" 2>/dev/null; done
         kwriteconfig6 --file "$CONFIG" --group Plugins --key weaveEnabled false
         qdbus6 org.kde.KWin /KWin reconfigure
+        # Disabling does not unload a running script; a loaded one stays stale.
+        qdbus6 org.kde.KWin /Scripting unloadScript weave
         kpackagetool6 --type=KWin/Script -r weave
         kwriteconfig6 --file "$CONFIG" --group Plugins --key weaveEnabled --delete
         kwriteconfig6 --file "$CONFIG" --group Script-weave --key manageClasses --delete
@@ -60,7 +62,7 @@ cleanup() {
 if [ "$DRY_RUN" = true ]; then
     say "Dry run: no commands will be executed."
     run sh "$ROOT/script/build.sh"
-    run kpackagetool6 --type=KWin/Script -i "$ROOT/script"
+    run kpackagetool6 --type=KWin/Script -i "$ROOT/script/dist"
     run kwriteconfig6 --file "$CONFIG" --group Plugins --key weaveEnabled true
     RESOURCE_CLASS=$(sed -n 's/^var KCALC_RESOURCE_CLASS = "\([^"]*\)";.*/\1/p' \
         "$JS_DIR/expected.js")
@@ -109,13 +111,36 @@ cat "$ROOT/core/geometry.js" "$ROOT/core/tree.js" "$ROOT/core/snap.js" \
     > "$TMP_DIR/check-prefix.js"
 
 run sh "$ROOT/script/build.sh"
-run kpackagetool6 --type=KWin/Script -i "$ROOT/script"
+qdbus6 org.kde.KWin /Scripting unloadScript weave >/dev/null 2>&1 || true
+BUILD_ID=$(cat "$ROOT/script/dist/BUILD_ID")
+BUILD_TS=$(date --iso-8601=seconds)
+run kpackagetool6 --type=KWin/Script -i "$ROOT/script/dist"
 run kwriteconfig6 --file "$CONFIG" --group Plugins --key weaveEnabled true
 run kwriteconfig6 --file "$CONFIG" --group Script-weave --key manageClasses \
     "$RESOURCE_CLASS"
 run kwriteconfig6 --file "$CONFIG" --group Script-weave --key settleSeconds 0
 run kwriteconfig6 --file "$CONFIG" --group Script-weave --key logLevel debug
 run qdbus6 org.kde.KWin /KWin reconfigure
+# Config-enabled scripts are loaded on reconfigure but only run after start.
+run qdbus6 org.kde.KWin /Scripting start
+
+# KWin may keep running an older main file; prove the fresh build is loaded.
+build_try=0
+build_seen=false
+while [ "$build_try" -lt 20 ]; do
+    if journalctl --user --since "$BUILD_TS" -o cat 2>/dev/null \
+            | grep -qF "weave loaded build=$BUILD_ID"; then
+        build_seen=true
+        break
+    fi
+    sleep 0.5
+    build_try=$((build_try + 1))
+done
+if [ "$build_seen" != true ]; then
+    say "FAIL: stale script: 'weave loaded build=$BUILD_ID' not in the journal"
+    exit 1
+fi
+say "Build $BUILD_ID is loaded."
 
 kcalc >/dev/null 2>&1 & KCALC_PIDS="$KCALC_PIDS $!"
 kcalc >/dev/null 2>&1 & KCALC_PIDS="$KCALC_PIDS $!"
@@ -287,4 +312,6 @@ send_all send-kcalc.js weave-live-restore-left-s6
 run_script select-master.js weave-live-select-s6 ''
 invoke "Weave Dock Left"
 run_script check-s6.js weave-live-check-s6 S6
+# Let the 2 s save debounce fire before cleanup unloads the script.
+sleep 3
 summary

@@ -10,6 +10,16 @@
     var candidateWatches = new Set();
     var settleDeadline = 0;
     var settleGeneration = 0;
+    var persistence = "off";
+    var persistWaiting = false;
+    var persistFailed = false;
+    var persistDeadline = 0;
+    var savedText = null;
+    var ledger = [];
+    var saveGeneration = 0;
+    var quitting = false;
+    var STATE_SERVICE = "org.weave.State";
+    var BUILD_ID = "@@BUILD_ID@@";
 
     function property(object, name) {
         try { return object == null ? undefined : object[name]; }
@@ -118,6 +128,7 @@
             settleSeconds: Math.max(0, Math.floor(Number(
                 readConfigValue("settleSeconds", 3)) || 0)),
             dropNativeTiles: configBoolean(readConfigValue("dropNativeTiles", true), true),
+            persist: configBoolean(readConfigValue("persist", true), true),
             masterRatio: Number(readConfigValue("masterRatio", 0.6)),
             logLevel: String(readConfigValue("logLevel", "off"))
         };
@@ -128,7 +139,13 @@
     }
 
     function readConfigValue(name, fallback) {
-        try { return host.readConfig(name, fallback); }
+        try {
+            if (typeof readConfig === "function") { return readConfig(name, fallback); }
+            if (host && typeof host.readConfig === "function") {
+                return host.readConfig(name, fallback);
+            }
+            return fallback;
+        }
         catch (error) { logError("readConfig " + name, error); return fallback; }
     }
 
@@ -201,7 +218,7 @@
     }
 
     function startTimer(milliseconds, callback) {
-        if (typeof host.startTimer === "function") {
+        if (host && typeof host.startTimer === "function") {
             host.startTimer(milliseconds, callback);
             return true;
         }
@@ -230,12 +247,160 @@
 
     function settleEvent() {
         if (!observing || Date.now() < settleDeadline) { return; }
+        if (persistence === "pending") {
+            if (Date.now() >= persistDeadline) {
+                persistFail("Get timed out");
+                return;
+            }
+            waitForState();
+            return;
+        }
         observing = false;
         adoptCandidates();
     }
 
+    function waitForState() {
+        if (persistWaiting) { return; }
+        persistWaiting = true;
+        var started = startTimer(2000, guarded("state timeout", function () {
+            if (persistence === "pending") { persistFail("Get timed out"); }
+        }));
+        if (!started) { log("debug", "persistence: no timer, Get timeout checks on events"); }
+    }
+
+    function persistFail(what, error) {
+        persistence = "off";
+        if (!persistFailed) {
+            persistFailed = true;
+            log("debug", "persistence off: " + what + (error ? " " + String(error) : ""));
+        }
+        if (persistWaiting) { settleEvent(); }
+    }
+
+    function sendDBus() {
+        if (typeof callDBus === "function") { return callDBus.apply(null, arguments); }
+        if (host && typeof host.callDBus === "function") {
+            return host.callDBus.apply(host, arguments);
+        }
+        throw new Error("callDBus unavailable");
+    }
+
+    function startPersistence() {
+        persistence = "off";
+        log("debug", "persistence config: persist=" + String(config.persist) +
+            " manageClasses=" + JSON.stringify(config.manageClasses));
+        if (!config.persist) {
+            log("debug", "persistence off: persist disabled");
+            return;
+        }
+        if (config.manageClasses.length === 0) {
+            log("debug", "persistence off: no manageClasses");
+            return;
+        }
+        persistence = "pending";
+        persistDeadline = Date.now() + 2000;
+        log("debug", "persistence pending: sending Get");
+        try {
+            sendDBus(STATE_SERVICE, "/State", STATE_SERVICE, "Get",
+                guarded("state reply", onStateReply));
+        } catch (error) { persistFail("Get", error); }
+    }
+
+    function onStateReply(text) {
+        if (persistence !== "pending") { return; }
+        savedText = typeof text === "string" ? text : null;
+        persistence = savedText === null ? "off" : "ready";
+        log("debug", "persistence Get reply: " + typeof text + " length " +
+            (savedText === null ? "n/a" : savedText.length));
+        if (persistence === "off") { log("debug", "persistence off: empty Get reply"); }
+        else { log("debug", "persistence ready"); }
+        if (persistWaiting) { settleEvent(); }
+    }
+
+    function desktopNumber(desktop) {
+        if (typeof desktop === "number" || typeof desktop === "string") { return desktop; }
+        var number = property(desktop, "x11DesktopNumber");
+        return typeof number === "number" ? number : null;
+    }
+
+    function recordFor(state) {
+        var window = state.window;
+        return {
+            key: api.keyOf(property(window, "resourceClass"), property(window, "caption")),
+            mode: state.mode === "float" ? "float" : "tiled",
+            floatGeom: state.floatGeometry,
+            geom: roundedRect(property(window, "frameGeometry")),
+            ctx: {
+                outputName: state.context.outputName,
+                desktop: desktopNumber(state.context.desktop)
+            },
+            seen: Date.now()
+        };
+    }
+
+    function rememberClosed(state) {
+        if (persistence === "ready") { ledger.push(recordFor(state)); }
+    }
+
+    function forgetClosed(window) {
+        var wanted = api.keyString(api.keyOf(property(window, "resourceClass"),
+            property(window, "caption")));
+        for (var index = ledger.length - 1; index >= 0; index--) {
+            if (api.keyString(ledger[index].key) === wanted) {
+                ledger.splice(index, 1);
+                return;
+            }
+        }
+    }
+
+    function scheduleSave() {
+        if (persistence !== "ready" || observing || quitting) { return; }
+        saveGeneration++;
+        var generation = saveGeneration;
+        var started = startTimer(2000, guarded("save", function () {
+            if (generation === saveGeneration) { flushSave(); }
+        }));
+        if (!started) { flushSave(); }
+    }
+
+    function flushSave() {
+        saveGeneration++;
+        if (persistence !== "ready" || observing) { return; }
+        var records = ledger.slice();
+        states.forEach(function (state) { records.push(recordFor(state)); });
+        var text = api.serialize(records, Date.now());
+        log("debug", "persistence Set sent: " + records.length + " records, " +
+            text.length + " chars");
+        try {
+            sendDBus(STATE_SERVICE, "/State", STATE_SERVICE, "Set", text,
+                guarded("state set reply", function () {}));
+        } catch (error) { persistFail("Set", error); }
+    }
+
+    function aboutToQuit() {
+        flushSave();
+        quitting = true;
+    }
+
+    function newState(window, context, mode, record) {
+        var rect = roundedRect(property(window, "frameGeometry"));
+        var remembered = record && record.floatGeom ? roundedRect(record.floatGeom) : rect;
+        return {
+            id: windowId(window),
+            window: window,
+            context: context,
+            mode: mode,
+            floatGeometry: remembered,
+            floatWorkArea: workArea(context),
+            expected: new api.ExpectedGeometry(),
+            drag: null,
+            reassigning: false
+        };
+    }
+
     function adoptCandidates() {
         var groups = new Map();
+        var listing = [];
         candidates.forEach(function (window) {
             if (!eligible(window)) { return; }
             var context = contextFor(window);
@@ -249,41 +414,56 @@
             if (!rect) { return; }
             group.rects[id] = rect;
             group.windows.push(window);
+            listing.push({
+                id: id,
+                resourceClass: property(window, "resourceClass"),
+                caption: property(window, "caption"),
+                geom: rect
+            });
         });
+        var saved = {matches: {}, leftovers: []};
+        if (persistence === "ready") {
+            saved = api.restore(savedText, listing);
+            ledger = saved.leftovers;
+        }
         candidates.clear();
         candidateWatches.clear();
         groups.forEach(function (group) {
             var context = group.context;
             var area = api.geometry.workRect(workArea(context),
                 {outer: config.gapOuter});
-            var inferred = api.tree.infer(group.rects, area, 2);
-            if (!inferred) {
-                discardIfEmpty(context);
-                return;
-            }
-            context.tree = inferred.tree;
-            context.innerGap = inferred.gap;
-            context.adopted = true;
-            context.ids = [];
+            var floats = [];
+            var rest = [];
+            var rects = {};
             group.windows.forEach(function (window) {
                 var id = windowId(window);
-                if (states.has(id)) { return; }
-                var state = {
-                    id: id,
-                    window: window,
-                    context: context,
-                    mode: "tiled",
-                    floatGeometry: roundedRect(property(window, "frameGeometry")),
-                    floatWorkArea: workArea(context),
-                    expected: new api.ExpectedGeometry(),
-                    drag: null,
-                    reassigning: false
-                };
-                states.set(id, state);
-                context.ids.push(id);
-                watchWindow(state);
+                var record = saved.matches[id];
+                if (record && record.mode === "float") { floats.push(window); return; }
+                rest.push(window);
+                rects[id] = group.rects[id];
             });
+            var inferred = rest.length ? api.tree.infer(rects, area, 2) : null;
+            context.ids = [];
+            if (inferred) {
+                context.tree = inferred.tree;
+                context.innerGap = inferred.gap;
+                context.adopted = true;
+                adoptWindows(rest, context, "tiled", saved.matches);
+            }
+            adoptWindows(floats, context, "float", saved.matches);
+            if (!inferred) { discardIfEmpty(context); }
             log("info", "adopted " + context.ids.length + " windows in " + context.key);
+        });
+    }
+
+    function adoptWindows(windows, context, mode, matches) {
+        windows.forEach(function (window) {
+            var id = windowId(window);
+            if (states.has(id)) { return; }
+            var state = newState(window, context, mode, matches[id]);
+            states.set(id, state);
+            if (mode === "tiled") { context.ids.push(id); }
+            watchWindow(state);
         });
     }
 
@@ -296,17 +476,7 @@
         var id = windowId(window);
         if (id === null || states.has(id)) { return; }
         var context = contextFor(window);
-        var state = {
-            id: id,
-            window: window,
-            context: context,
-            mode: "tiled",
-            floatGeometry: roundedRect(property(window, "frameGeometry")),
-            floatWorkArea: workArea(context),
-            expected: new api.ExpectedGeometry(),
-            drag: null,
-            reassigning: false
-        };
+        var state = newState(window, context, "tiled", null);
         states.set(id, state);
         if (context.adopted && context.tree) {
             var existing = context.ids[context.ids.length - 1];
@@ -318,6 +488,8 @@
         }
         watchWindow(state);
         applyContext(context);
+        forgetClosed(window);
+        scheduleSave();
         log("info", "managed " + id + " in " + context.key);
     }
 
@@ -329,6 +501,7 @@
         var state = states.get(id);
         if (!state) { return; }
         var context = state.context;
+        rememberClosed(state);
         context.ids = context.ids.filter(function (item) { return item !== id; });
         states.delete(id);
         state.expected.clear(id);
@@ -339,6 +512,7 @@
         }
         if (context.ids.length) { applyContext(context); }
         else { discardIfEmpty(context); }
+        scheduleSave();
     }
 
     function floating(state) {
@@ -356,6 +530,7 @@
         }
         if (state.context.ids.length) { applyContext(state.context); }
         else { discardIfEmpty(state.context); }
+        scheduleSave();
     }
 
     function tiling(state) {
@@ -367,6 +542,7 @@
         state.context.ids.push(state.id);
         rebuild(state.context);
         applyContext(state.context);
+        scheduleSave();
     }
 
     function restoreFloatGeometry(state) {
@@ -577,6 +753,7 @@
         state.floatGeometry = rect;
         state.floatWorkArea = area;
         setGeometry(state.window, rect);
+        scheduleSave();
     }
 
     function dock(side) {
@@ -655,8 +832,10 @@
 
     guarded("startup", function () {
         loadConfig();
+        log("info", "loaded build=" + BUILD_ID);
         installShortcuts();
-        observing = config.settleSeconds > 0;
+        startPersistence();
+        observing = config.settleSeconds > 0 || persistence === "pending";
         connect(workspace, "windowAdded", function (window) {
             settleEvent();
             if (observing) { recordCandidate(window, true); }
@@ -664,6 +843,8 @@
         });
         connect(workspace, "windowRemoved", removeWindow);
         connect(workspace, "windowActivated", settleEvent);
+        connect(workspace, "aboutToQuit", aboutToQuit);
+        connect(property(host, "qApp"), "aboutToQuit", aboutToQuit);
         connect(workspace, "screensChanged", outputsChanged);
         connect(workspace, "outputsChanged", outputsChanged);
         if (property(workspace, "configChanged") !== undefined) {
