@@ -37,6 +37,8 @@
         layout: tree.layout,
         hitTest: tree.hitTest,
         edgeAt: tree.edgeAt,
+        edgeForSide: tree.edgeForSide,
+        ratioForSide: tree.ratioForSide,
         infer: tree.infer,
         masterStack: tree.masterStack,
         columns: tree.columns,

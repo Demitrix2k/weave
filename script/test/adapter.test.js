@@ -804,3 +804,95 @@ test('build.sh injects the content hash into dist main.js', () => {
     assert.ok(built.includes('BUILD_ID = "' + id + '"'));
     assert.ok(!built.includes('@@BUILD_ID@@'));
 });
+
+function resizeHarness() {
+    const h = harness({manageClasses: 'editor', gapInner: 8, gapOuter: 8});
+    const a = makeWindow('a');
+    const b = makeWindow('b');
+    const c = makeWindow('c');
+    h.add(a);
+    h.add(b);
+    h.add(c);
+    return {h, a, b, c};
+}
+
+function dragFrame(h, window, frame) {
+    window.resize = true;
+    window.interactiveMoveResizeStarted.emit();
+    window.frameGeometry = Object.assign(geometry(window), frame);
+    // The cursor is deliberately far from every edge: it must not matter.
+    h.workspace.cursorPos = {x: 3000, y: 3000};
+    window.interactiveMoveResizeFinished.emit();
+    window.resize = false;
+}
+
+test('resize: master shrinks and grows by its right edge', () => {
+    const {h, a, b} = resizeHarness();
+    dragFrame(h, a, {width: 592});
+    assert.deepEqual(geometry(a), {x: 8, y: 8, width: 592, height: 785});
+    assert.equal(geometry(b).x, 608);
+    assert.equal(geometry(b).width, 584);
+    dragFrame(h, a, {width: 900});
+    assert.equal(geometry(a).width, 900);
+    assert.equal(geometry(b).x, 916);
+});
+
+test('resize: stack window left edge moves the same node as the master right edge', () => {
+    const {h, a, b, c} = resizeHarness();
+    dragFrame(h, b, {x: 800, width: 392});
+    assert.equal(geometry(a).width, 784);
+    assert.equal(geometry(b).x, 800);
+    assert.equal(geometry(c).x, 800);
+});
+
+test('resize: stack windows split from the top and bottom edges', () => {
+    const {h, b, c} = resizeHarness();
+    dragFrame(h, c, {y: 300, height: 493});
+    assert.equal(geometry(b).height, 284);
+    assert.equal(geometry(c).y, 300);
+    dragFrame(h, b, {height: 492});
+    assert.equal(geometry(b).y + geometry(b).height, 500);
+    assert.equal(geometry(c).y, 508);
+});
+
+test('resize: a corner drag applies both sides', () => {
+    const {h, a, b, c} = resizeHarness();
+    dragFrame(h, b, {x: 800, width: 392, height: 492});
+    assert.equal(geometry(a).width, 784);
+    assert.equal(geometry(b).x, 800);
+    assert.equal(geometry(b).height, 492);
+    assert.equal(geometry(c).y, 508);
+});
+
+test('resize: edges on the work-area border are ignored', () => {
+    const {h, a, b, c} = resizeHarness();
+    const before = [a, b, c].map(geometry);
+    dragFrame(h, b, {width: 300});
+    dragFrame(h, a, {x: 100, width: 614});
+    dragFrame(h, a, {y: 100, height: 693});
+    assert.deepEqual([a, b, c].map(geometry), before);
+});
+
+test('resize: a floating window never changes the tree', () => {
+    const {h, a, b, c} = resizeHarness();
+    const before = [a, b, c].map(geometry);
+    const loose = makeWindow('f', {resourceClass: 'other'});
+    h.add(loose);
+    dragFrame(h, loose, {x: 700, width: 100});
+    assert.deepEqual([a, b, c].map(geometry), before);
+});
+
+test('resize: the ratio is clamped so each pane keeps 100 px', () => {
+    const {h, a, b} = resizeHarness();
+    dragFrame(h, a, {width: 12});
+    assert.equal(geometry(a).width, 100);
+    dragFrame(h, a, {width: 1180});
+    assert.equal(geometry(b).width, 100);
+});
+
+test('resize: no side changed re-applies the layout', () => {
+    const {h, a, b, c} = resizeHarness();
+    const before = [a, b, c].map(geometry);
+    dragFrame(h, a, {x: 8.4, width: 706});
+    assert.deepEqual([a, b, c].map(geometry), before);
+});

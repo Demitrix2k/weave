@@ -220,6 +220,59 @@ function edgeAt(t, area, gaps, point, tolerance) {
   }, []);
   return result;
 }
+const SIDE_AXIS = {left : 'h', right : 'h', top : 'v', bottom : 'v'};
+// Ancestors of the leaf holding id, outermost first: [{node, path, key}] where
+// key is 'a' or 'b' (the child the window is in).
+function ancestry(t, id) {
+  const chain = [];
+  let node = t;
+  const path = [];
+  while (node && node.type === 'split') {
+    const key = windowIds(node.a).includes(id) ? 'a' : 'b';
+    chain.push({node, path : path.slice(), key});
+    path.push(key);
+    node = node[key];
+  }
+  return node && node.type === 'leaf' && node.windows.includes(id) ? chain : null;
+}
+// Path of the nearest split whose separator is the given side of the window:
+// right/bottom need the window in a, left/top need it in b. Null on the border.
+function edgeForSide(t, area, gaps, id, side) {
+  const axis = SIDE_AXIS[side];
+  const chain = axis && ancestry(t, id);
+  if (!chain)
+    return null;
+  const key = side === 'right' || side === 'bottom' ? 'a' : 'b';
+  for (let i = chain.length - 1; i >= 0; i--)
+    if (chain[i].node.dir === axis && chain[i].key === key)
+      return chain[i].path;
+  return null;
+}
+// Ratio that puts the separator at the window's new side coordinate. The
+// parent rect is rebuilt from the current tree; each pane keeps minPane px.
+function ratioForSide(t, area, gaps, path, side, coord, minPane) {
+  gaps = gaps || {};
+  const gap = Math.max(0, gaps.inner || 0);
+  let rect = g.workRect(area, gaps);
+  let node = t;
+  for (const key of pathParts(path)) {
+    if (!node || node.type !== 'split')
+      return null;
+    rect = splitArea(node, rect, gap, {})[key === 'a' ? 0 : 1];
+    node = node[key];
+  }
+  if (!node || node.type !== 'split')
+    return null;
+  const horizontal = node.dir === 'h';
+  const size = horizontal ? rect.width : rect.height;
+  const innerGap = Math.min(gap, size);
+  const length = Math.max(1, size - innerGap);
+  const start = horizontal ? rect.x : rect.y;
+  const first = side === 'right' || side === 'bottom';
+  const ratio = (coord - start - (first ? 0 : innerGap)) / length;
+  const low = Math.min(0.5, (minPane === undefined ? 100 : minPane) / length);
+  return Math.max(low, Math.min(1 - low, ratio));
+}
 function line(list, dir) {
   if (!list.length)
     return null;
@@ -367,6 +420,8 @@ const api = {
   layout,
   hitTest,
   edgeAt,
+  edgeForSide,
+  ratioForSide,
   masterStack,
   columns,
   monocle,

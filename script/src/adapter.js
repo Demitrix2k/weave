@@ -20,6 +20,7 @@
     var quitting = false;
     var STATE_SERVICE = "org.weave.State";
     var BUILD_ID = "@@BUILD_ID@@";
+    var MIN_PANE = 100;
 
     function property(object, name) {
         try { return object == null ? undefined : object[name]; }
@@ -672,7 +673,7 @@
                 applyContext(context);
             }
         } else if (drag.resize) {
-            resizeAtCursor(state);
+            resizeByFrame(state, drag);
         }
     }
 
@@ -689,41 +690,40 @@
         context.adopted = true;
     }
 
-    function includesId(node, id) {
-        return node.type === "leaf" ? node.windows.indexOf(id) >= 0 :
-            includesId(node.a, id) || includesId(node.b, id);
+    function changedSides(start, end) {
+        var sides = [];
+        if (Math.abs(end.x - start.x) > 1) { sides.push({side: "left", coord: end.x}); }
+        if (Math.abs(end.x + end.width - start.x - start.width) > 1) {
+            sides.push({side: "right", coord: end.x + end.width});
+        }
+        if (Math.abs(end.y - start.y) > 1) { sides.push({side: "top", coord: end.y}); }
+        if (Math.abs(end.y + end.height - start.y - start.height) > 1) {
+            sides.push({side: "bottom", coord: end.y + end.height});
+        }
+        return sides;
     }
 
-    function resizeAtCursor(state) {
-        var point = property(workspace, "cursorPos");
-        if (!point) { applyContext(state.context); return; }
+    function resizeByFrame(state, drag) {
         var context = state.context;
+        var end = roundedRect(property(state.window, "frameGeometry"));
+        var start = drag.startGeometry;
+        if (!context.tree || !start || !end) { applyContext(context); return; }
         var area = workArea(context);
         var gaps = contextGaps(context);
-        var path = api.tree.edgeAt(context.tree, area, gaps, point);
-        if (path === null) { applyContext(context); return; }
-        var node = context.tree;
-        var parentArea = api.geometry.workRect(area, gaps);
-        path.forEach(function (part) {
-            var split = node;
-            var pair = split.dir === "h" ? api.geometry.splitH(parentArea,
-                split.ratio, gaps.inner) : api.geometry.splitV(parentArea,
-                split.ratio, gaps.inner);
-            parentArea = pair[part === "a" ? 0 : 1];
-            node = split[part];
+        var edges = [];
+        changedSides(start, end).forEach(function (change) {
+            var path = api.tree.edgeForSide(context.tree, area, gaps, state.id, change.side);
+            if (path) { edges.push({path: path, side: change.side, coord: change.coord}); }
         });
-        var geometry = roundedRect(property(state.window, "frameGeometry"));
-        var inFirst = includesId(node.a, state.id);
-        var horizontal = node.dir === "h";
-        var start = horizontal ? parentArea.x : parentArea.y;
-        var size = horizontal ? parentArea.width : parentArea.height;
-        var length = Math.max(1, size - Math.min(gaps.inner, size));
-        var boundary = horizontal ? (inFirst ? geometry.x + geometry.width : geometry.x) :
-            (inFirst ? geometry.y + geometry.height : geometry.y);
-        var ratio = (boundary - start - (inFirst ? 0 : Math.min(gaps.inner, size))) /
-            length;
-        context.tree = api.tree.setRatio(context.tree, path, ratio);
-        context.adopted = true;
+        edges.sort(function (a, b) { return a.path.length - b.path.length; });
+        log("debug", "resize " + state.id + " edges=" + JSON.stringify(edges));
+        edges.forEach(function (edge) {
+            var ratio = api.tree.ratioForSide(context.tree, area, gaps, edge.path,
+                edge.side, edge.coord, MIN_PANE);
+            if (ratio === null) { return; }
+            context.tree = api.tree.setRatio(context.tree, edge.path, ratio);
+        });
+        if (edges.length) { context.adopted = true; }
         applyContext(context);
     }
 
