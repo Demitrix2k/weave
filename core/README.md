@@ -14,7 +14,9 @@ its private event queue changes when recording or consuming expectations.
 ## API
 
 - geometry: rect, inset, contains, centre, splitH, splitV, clampSize,
-  equalRects, workRect. Rectangles have x, y, width, height. Splits return [a,b].
+  equalRects, workRect, translateClamp, mostlyInside. Rectangles have x, y,
+  width, height. Splits return [a,b]. translateClamp offsets between work areas,
+  clamps position, and shrinks only when the rectangle cannot fit.
 - tree: insert, remove, swap, setRatio, dockToSide, layout, hitTest, edgeAt,
   infer, masterStack, columns, monocle, spiral. `infer(rectsById, area,
   tolerance)` returns `{tree, gap}` for non-overlapping guillotine partitions,

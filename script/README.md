@@ -20,3 +20,7 @@ The adapter uses only KWin's documented script globals and signals plus the
 feature-detected properties described in `DESIGN.md` and the drag-log spike.
 Runtime API assumptions that still need checking in a real KWin session are
 listed in the implementation summary when this source is delivered.
+
+Output and desktop reassignment appends the window to the destination's ordered list and
+regenerates its master-stack tree; source contexts also regenerate unless their tree was
+adopted at startup or edited by a drag, resize, or dock action.

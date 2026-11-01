@@ -96,6 +96,29 @@
         return inset(copy, outer, outer, outer, outer);
     }
 
+    function translateClamp(rectangle, oldArea, newArea) {
+        const width = Math.min(rectangle.width, newArea.width);
+        const height = Math.min(rectangle.height, newArea.height);
+        const x = clamp(rectangle.x + newArea.x - oldArea.x,
+            newArea.x, newArea.x + newArea.width - width);
+        const y = clamp(rectangle.y + newArea.y - oldArea.y,
+            newArea.y, newArea.y + newArea.height - height);
+        return rect(x, y, width, height);
+    }
+
+    function overlapArea(first, second) {
+        const width = Math.max(0, Math.min(first.x + first.width,
+            second.x + second.width) - Math.max(first.x, second.x));
+        const height = Math.max(0, Math.min(first.y + first.height,
+            second.y + second.height) - Math.max(first.y, second.y));
+        return width * height;
+    }
+
+    function mostlyInside(rectangle, area) {
+        const total = rectangle.width * rectangle.height;
+        return total > 0 && overlapArea(rectangle, area) * 2 > total;
+    }
+
     const api = {
         rect,
         inset,
@@ -105,7 +128,9 @@
         splitV,
         clampSize,
         equalRects,
-        workRect
+        workRect,
+        translateClamp,
+        mostlyInside
     };
     return Object.assign({}, api, {geometry: api});
 });

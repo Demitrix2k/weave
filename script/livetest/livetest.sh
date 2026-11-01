@@ -1,0 +1,290 @@
+#!/bin/sh
+# Uses the same core geometry, tree, and snap code as build.sh for expectations.
+# Only kcalc windows are selected, moved, or terminated by this harness.
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+CONFIG=${HOME}/.config/kwinrc
+SCRIPTS=${HOME}/.local/share/kwin/scripts
+JS_DIR=$ROOT/script/livetest/js
+DRY_RUN=false
+JSON=false
+case "${1-}" in
+    --dry-run) DRY_RUN=true ;;
+    --json) JSON=true ;;
+    '') ;;
+    *) printf 'Usage: %s [--dry-run|--json]\n' "$0"; exit 2 ;;
+esac
+
+say() { printf '%s\n' "$*"; }
+run() {
+    if [ "$DRY_RUN" = true ]; then say "DRY-RUN: $*"; return 0; fi
+    output=$("$@" 2>&1) || { say "$output"; return 1; }
+    case "$output" in
+        *NoReply*|*"Remote peer disconnected"*) say "$output"; return 1 ;;
+    esac
+    [ -z "$output" ] || say "$output"
+}
+
+cleanup() {
+    result=$?
+    trap - EXIT INT TERM
+    set +e
+    if [ "$DRY_RUN" != true ]; then
+        for pid in ${KCALC_PIDS-}; do
+            kill "$pid" 2>/dev/null
+        done
+        for pid in ${KCALC_PIDS-}; do wait "$pid" 2>/dev/null; done
+        kwriteconfig6 --file "$CONFIG" --group Plugins --key weaveEnabled false
+        qdbus6 org.kde.KWin /KWin reconfigure
+        kpackagetool6 --type=KWin/Script -r weave
+        kwriteconfig6 --file "$CONFIG" --group Plugins --key weaveEnabled --delete
+        kwriteconfig6 --file "$CONFIG" --group Script-weave --key manageClasses --delete
+        kwriteconfig6 --file "$CONFIG" --group Script-weave --key settleSeconds --delete
+        kwriteconfig6 --file "$CONFIG" --group Script-weave --key logLevel --delete
+        qdbus6 org.kde.KWin /KWin reconfigure
+        printf 'Remaining kcalc PIDs: '
+        pgrep -x kcalc || true
+        config_count=$(grep -ic weave "$CONFIG" 2>/dev/null || true)
+        script_count=$(find "$SCRIPTS" -maxdepth 2 -iname '*weave*' -print \
+            2>/dev/null | wc -l | tr -d ' ')
+        say "Leftover weave lines in kwinrc: $config_count"
+        say "Installed weave scripts: $script_count"
+    else
+        say "DRY-RUN: cleanup removes only recorded kcalc PIDs and harness settings."
+    fi
+    [ -z "${TMP_DIR-}" ] || rm -rf "$TMP_DIR"
+    exit "$result"
+}
+
+if [ "$DRY_RUN" = true ]; then
+    say "Dry run: no commands will be executed."
+    run sh "$ROOT/script/build.sh"
+    run kpackagetool6 --type=KWin/Script -i "$ROOT/script"
+    run kwriteconfig6 --file "$CONFIG" --group Plugins --key weaveEnabled true
+    RESOURCE_CLASS=$(sed -n 's/^var KCALC_RESOURCE_CLASS = "\([^"]*\)";.*/\1/p' \
+        "$JS_DIR/expected.js")
+    run kwriteconfig6 --file "$CONFIG" --group Script-weave --key manageClasses \
+        "$RESOURCE_CLASS"
+    run kwriteconfig6 --file "$CONFIG" --group Script-weave --key settleSeconds 0
+    run kwriteconfig6 --file "$CONFIG" --group Script-weave --key logLevel debug
+    run qdbus6 org.kde.KWin /KWin reconfigure
+    say "DRY-RUN: pgrep -x kcalc"
+    say "DRY-RUN: mktemp -d"
+    say "DRY-RUN: cat core sources and expected.js > <tmp>/check-prefix.js"
+    say "DRY-RUN: kcalc (three launches; record each PID)"
+    say "DRY-RUN: poll dump.js with journalctl --user --since <timestamp> -o cat"
+    say "DRY-RUN: load send-kcalc.js; run /Scripting/Script<ID>; wait; unload"
+    say "DRY-RUN: load check-s1.js; run /Scripting/Script<ID>; wait; unload"
+    say "DRY-RUN: load send-first-right.js; run /Scripting/Script<ID>; wait; unload"
+    say "DRY-RUN: load check-s2.js; run /Scripting/Script<ID>; wait; unload"
+    say "DRY-RUN: select-last-dp.js; invoke Toggle Float; invoke Snap Left Half"
+    say "DRY-RUN: load probe-s3-snap.js; run /Scripting/Script<ID>; wait; unload"
+    say "DRY-RUN: invoke Toggle Float; load check-s3.js; run; wait; unload"
+    say "DRY-RUN: send-kcalc-right.js; load check-s4.js; run; wait; unload"
+    say "DRY-RUN: send-kcalc.js; float first; dump its float size; retile; move to HDMI-A-1"
+    say "DRY-RUN: invoke Toggle Float; load check-s5.js; run; wait; unload"
+    say "DRY-RUN: invoke Toggle Float; send-kcalc.js; select-master.js; invoke Dock Left"
+    say "DRY-RUN: load check-s6.js; run /Scripting/Script<ID>; wait; unload"
+    say "DRY-RUN: journalctl result parsing, summary table, optional JSON array"
+    say "DRY-RUN: kill <recorded PID> and wait <recorded PID> for each launch"
+    say "DRY-RUN: disable/remove Weave, delete four harness config keys, reconfigure"
+    say "DRY-RUN: pgrep -x kcalc; grep kwinrc; find installed scripts; rm -rf <tmp>"
+    exit 0
+fi
+
+if pgrep -x kcalc >/dev/null 2>&1; then
+    say "Refusing to run: kcalc is already running. Close it and retry."
+    exit 2
+fi
+TMP_DIR=$(mktemp -d)
+KCALC_PIDS=
+trap cleanup EXIT
+trap 'exit 1' INT TERM
+RESOURCE_CLASS=$(sed -n 's/^var KCALC_RESOURCE_CLASS = "\([^"]*\)";.*/\1/p' \
+    "$JS_DIR/expected.js")
+cat "$ROOT/core/geometry.js" "$ROOT/core/tree.js" "$ROOT/core/snap.js" \
+    "$ROOT/core/stage.js" "$ROOT/core/arrangement.js" "$ROOT/core/context.js" \
+    "$ROOT/core/index.js" "$JS_DIR/expected.js" \
+    > "$TMP_DIR/check-prefix.js"
+
+run sh "$ROOT/script/build.sh"
+run kpackagetool6 --type=KWin/Script -i "$ROOT/script"
+run kwriteconfig6 --file "$CONFIG" --group Plugins --key weaveEnabled true
+run kwriteconfig6 --file "$CONFIG" --group Script-weave --key manageClasses \
+    "$RESOURCE_CLASS"
+run kwriteconfig6 --file "$CONFIG" --group Script-weave --key settleSeconds 0
+run kwriteconfig6 --file "$CONFIG" --group Script-weave --key logLevel debug
+run qdbus6 org.kde.KWin /KWin reconfigure
+
+kcalc >/dev/null 2>&1 & KCALC_PIDS="$KCALC_PIDS $!"
+kcalc >/dev/null 2>&1 & KCALC_PIDS="$KCALC_PIDS $!"
+kcalc >/dev/null 2>&1 & KCALC_PIDS="$KCALC_PIDS $!"
+
+load_and_run() {
+    script_path=$1
+    script_name=$2
+    scenario=${3-}
+    timestamp=$(date --iso-8601=seconds)
+    output=$(qdbus6 org.kde.KWin /Scripting loadScript "$script_path" "$script_name" 2>&1) || {
+        say "$output"; return 1;
+    }
+    case "$output" in *NoReply*|*"Remote peer disconnected"*) say "$output"; return 1 ;; esac
+    script_id=$(printf '%s\n' "$output" | tail -n 1 | sed -n \
+        's/^[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p')
+    [ -n "$script_id" ] || { say "Could not parse script id: $output"; return 1; }
+    # Script.run did not execute loaded scripts on KWin 6.8.0; start does.
+    run qdbus6 org.kde.KWin /Scripting start
+    attempt=0
+    line=
+    while [ "$attempt" -lt 10 ]; do
+        journal=$(journalctl --user --since "$timestamp" -o cat 2>/dev/null || true)
+        if [ -n "$scenario" ] && [ "$scenario" != SNAP ]; then
+            line=$(printf '%s\n' "$journal" | rg -F "WEAVE_LIVE {\"scenario\":\"$scenario\"" \
+                | tail -n 1 || true)
+        elif [ "$scenario" = SNAP ]; then
+            line=$(printf '%s\n' "$journal" | rg '^WEAVE_S3_SNAP ' | tail -n 1 || true)
+        else
+            line=$(printf '%s\n' "$journal" | rg '^WEAVE_LIVE_STEP ' | tail -n 1 || true)
+        fi
+        [ -n "$line" ] && break
+        sleep 0.5
+        attempt=$((attempt + 1))
+    done
+    if [ -n "$scenario" ] && [ "$scenario" != SNAP ]; then
+        if [ -z "$line" ]; then
+            line="WEAVE_LIVE {\"scenario\":\"$scenario\",\"status\":\"FAIL\","
+            line="$line\"expected\":[],\"actual\":[]}"
+        fi
+        printf '%s\n' "$line" >> "$TMP_DIR/results"
+        say "$line"
+    elif [ "$scenario" = SNAP ]; then
+        S3_SNAP_STATUS=$(printf '%s\n' "$line" | sed -n \
+            's/^WEAVE_S3_SNAP \(PASS\|FAIL\)$/\1/p')
+        [ -n "$S3_SNAP_STATUS" ] || S3_SNAP_STATUS=FAIL
+    elif [ -z "$line" ]; then
+        say "Timed out waiting for script result: $script_name"
+        return 1
+    fi
+    LAST_STEP_LINE=$line
+    run qdbus6 org.kde.KWin /Scripting unloadScript "$script_name"
+}
+
+run_script() {
+    source_file=$1
+    name=$2
+    scenario=$3
+    if [ "$source_file" = check-s3.js ]; then
+        [ "${S3_SNAP_STATUS-FAIL}" = PASS ] && snap_literal=true || snap_literal=false
+        cat "$TMP_DIR/check-prefix.js" > "$TMP_DIR/$name.js"
+        printf 'var priorSnapPassed = %s;\n' "$snap_literal" >> "$TMP_DIR/$name.js"
+        cat "$JS_DIR/$source_file" >> "$TMP_DIR/$name.js"
+    elif [ "$source_file" = check-s5.js ]; then
+        printf 'var priorS5Size = {width:%s,height:%s};\n' \
+            "${S5_WIDTH-0}" "${S5_HEIGHT-0}" > "$TMP_DIR/$name.js"
+        cat "$TMP_DIR/check-prefix.js" >> "$TMP_DIR/$name.js"
+        cat "$JS_DIR/$source_file" >> "$TMP_DIR/$name.js"
+    else
+        cat "$TMP_DIR/check-prefix.js" "$JS_DIR/$source_file" > "$TMP_DIR/$name.js"
+    fi
+    load_and_run "$TMP_DIR/$name.js" "$name" "$scenario"
+}
+
+wait_for_three() {
+    attempt=0
+    while [ "$attempt" -lt 40 ]; do
+        timestamp=$(date --iso-8601=seconds)
+        run_script dump.js weave-live-count ''
+        journal=$(journalctl --user --since "$timestamp" -o cat 2>/dev/null || true)
+        count=$(printf '%s\n' "$journal" | rg -c '^WEAVE_LIVE_WINDOW ' || true)
+        [ "${count:-0}" -ge 3 ] && return 0
+        sleep 0.5
+        attempt=$((attempt + 1))
+    done
+    say "Timed out waiting for three kcalc windows."
+    return 1
+}
+
+# Moving a window between outputs is asynchronous in KWin, so repeat the
+# idempotent send script until it reports no window left to move.
+send_all() {
+    send_file=$1
+    send_name=$2
+    send_try=0
+    while [ "$send_try" -lt 4 ]; do
+        LAST_STEP_LINE=
+        run_script "$send_file" "$send_name" ''
+        case "$LAST_STEP_LINE" in *"pending=0") return 0 ;; esac
+        sleep 0.7
+        send_try=$((send_try + 1))
+    done
+    say "Windows did not all reach the target output."
+    return 0
+}
+
+snapshot_first_size() {
+    timestamp=$(date --iso-8601=seconds)
+    run_script dump.js weave-live-before-s5 ''
+    journal=$(journalctl --user --since "$timestamp" -o cat 2>/dev/null || true)
+    size=$(printf '%s\n' "$journal" | awk '$1 == "WEAVE_LIVE_WINDOW" \
+        {print $7 "," $8; exit}')
+    S5_WIDTH=${size%,*}
+    S5_HEIGHT=${size#*,}
+    [ -n "$S5_WIDTH" ] && [ -n "$S5_HEIGHT" ]
+}
+
+summary() {
+    statuses=
+    failures=0
+    for scenario in S1 S2 S3 S4 S5 S6; do
+        line=$(rg -F "WEAVE_LIVE {\"scenario\":\"$scenario\"" \
+            "$TMP_DIR/results" 2>/dev/null | tail -n 1 || true)
+        status=$(printf '%s\n' "$line" | sed -n 's/.*"status":"\(PASS\|FAIL\)".*/\1/p')
+        [ -n "$status" ] || status=FAIL
+        [ "$status" = PASS ] || failures=$((failures + 1))
+        statuses="$statuses $status"
+    done
+    say "Summary table"
+    say "Scenario | Status"
+    index=1
+    for status in $statuses; do say "S$index | $status"; index=$((index + 1)); done
+    if [ "$JSON" = true ]; then
+        node -e 'const fs=require("fs");const rows=fs.readFileSync(process.argv[1],"utf8")
+            .trim().split(/\n/).filter(Boolean).map(x=>JSON.parse(x.slice(11)));
+            const keep={};rows.forEach(x=>{if(/^S[1-6]$/.test(x.scenario))keep[x.scenario]=x;});
+            process.stdout.write(JSON.stringify(Object.keys(keep).sort().map(k=>keep[k]))+"\n");' \
+            "$TMP_DIR/results"
+    fi
+    [ "$failures" -eq 0 ]
+}
+
+wait_for_three
+send_all send-kcalc.js weave-live-send-left
+run_script check-s1.js weave-live-check-s1 S1
+run_script send-first-right.js weave-live-move-one ''
+run_script check-s2.js weave-live-check-s2 S2
+run_script select-last-dp.js weave-live-select-s3 ''
+invoke() { run qdbus6 org.kde.kglobalaccel /component/kwin \
+    org.kde.kglobalaccel.Component.invokeShortcut "$1"; }
+invoke "Weave Toggle Float"
+invoke "Weave Snap Left Half"
+run_script probe-s3-snap.js weave-live-probe-s3-snap SNAP
+invoke "Weave Toggle Float"
+run_script check-s3.js weave-live-check-s3 S3
+send_all send-kcalc-right.js weave-live-send-right
+run_script check-s4.js weave-live-check-s4 S4
+send_all send-kcalc.js weave-live-send-left
+run_script select-first-kcalc.js weave-live-select-s5-size ''
+invoke "Weave Toggle Float"
+snapshot_first_size
+invoke "Weave Toggle Float"
+run_script send-first-right.js weave-live-move-s5 ''
+run_script select-first-kcalc.js weave-live-select-s5 ''
+invoke "Weave Toggle Float"
+run_script check-s5.js weave-live-check-s5 S5
+invoke "Weave Toggle Float"
+send_all send-kcalc.js weave-live-restore-left-s6
+run_script select-master.js weave-live-select-s6 ''
+invoke "Weave Dock Left"
+run_script check-s6.js weave-live-check-s6 S6
+summary

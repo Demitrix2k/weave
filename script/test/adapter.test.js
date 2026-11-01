@@ -60,7 +60,10 @@ function makeWindow(id, options = {}) {
     Object.defineProperty(window, 'geometryWrites', {get() { return geometryWrites; }});
     Object.defineProperty(window, 'tile', {
         get() { return tile; },
-        set(value) { tile = value; tileChanged.emit(); }
+        set(value) {
+            tile = value;
+            tileChanged.emit();
+        }
     });
     return window;
 }
@@ -344,8 +347,8 @@ test('output reassignment reflows both contexts and uses a single leaf on the ne
     c.output = 'DP-1';
     c.outputChanged.emit();
     assert.deepEqual(geometry(a), {x: 8, y: 8, width: 706, height: 784});
-    assert.deepEqual(geometry(b), {x: 722, y: 8, width: 231, height: 784});
-    assert.deepEqual(geometry(c), {x: 961, y: 8, width: 231, height: 784});
+    assert.deepEqual(geometry(b), {x: 722, y: 8, width: 470, height: 388});
+    assert.deepEqual(geometry(c), {x: 722, y: 404, width: 470, height: 388});
 });
 
 test('desktop changes reassign context and an emptied context can be left behind', () => {
@@ -400,6 +403,85 @@ test('cross-output drag inserts at the destination edge and reflows both context
     assert.deepEqual(geometry(a), {x: 0, y: 0, width: 1200, height: 800});
 });
 
+test('reassigned windows regenerate the destination in arrival order', () => {
+    const options = {
+        areas: {
+            'DP-1': {x: 0, y: 0, width: 1200, height: 800},
+            'DP-2': {x: 1200, y: 0, width: 1200, height: 800}
+        }
+    };
+    const movedHarness = harness({manageClasses: 'editor', gapInner: 8, gapOuter: 8}, options);
+    const arrivalHarness = harness({manageClasses: 'editor', gapInner: 8, gapOuter: 8}, options);
+    const moved = ['a', 'b', 'c'].map(id => makeWindow(id));
+    const arrivals = ['a', 'b', 'c'].map(id => makeWindow('arrive-' + id,
+        {output: 'DP-2'}));
+    moved.forEach(window => movedHarness.add(window));
+    arrivals.forEach(window => arrivalHarness.add(window));
+    moved.forEach(window => {
+        window.output = 'DP-2';
+        window.outputChanged.emit();
+    });
+    assert.deepEqual(moved.map(geometry), arrivals.map(geometry));
+    assert.deepEqual(moved.map(geometry), [
+        {x: 1208, y: 8, width: 706, height: 784},
+        {x: 1922, y: 8, width: 470, height: 388},
+        {x: 1922, y: 404, width: 470, height: 388}
+    ]);
+});
+
+test('float restore after output reassignment stays on the new output', () => {
+    const h = harness({manageClasses: 'editor', gapInner: 8, gapOuter: 8}, {
+        areas: {
+            'DP-1': {x: 0, y: 0, width: 1200, height: 800},
+            'DP-2': {x: 1200, y: 0, width: 1000, height: 700}
+        }
+    });
+    const a = makeWindow('a', {frameGeometry: {x: 200, y: 100, width: 500, height: 400}});
+    h.add(a);
+    a.output = 'DP-2';
+    a.outputChanged.emit();
+    fireShortcut(h, 'Toggle Float', a);
+    assert.deepEqual(geometry(a), {x: 1400, y: 100, width: 500, height: 400});
+    assert.ok(geometry(a).x >= 1200);
+    assert.ok(geometry(a).x + geometry(a).width <= 2200);
+});
+
+test('float restore translates straddling rectangles and shrinks oversized ones', () => {
+    const h = harness({manageClasses: 'editor'}, {
+        areas: {
+            'DP-1': {x: 0, y: 0, width: 1200, height: 800},
+            'DP-2': {x: 1200, y: 0, width: 1000, height: 700}
+        }
+    });
+    const a = makeWindow('a', {frameGeometry: {x: 700, y: 100, width: 800, height: 400}});
+    h.add(a);
+    a.output = 'DP-2';
+    a.outputChanged.emit();
+    fireShortcut(h, 'Toggle Float', a);
+    assert.deepEqual(geometry(a), {x: 1400, y: 100, width: 800, height: 400});
+
+    const straddling = makeWindow('straddling', {
+        output: 'DP-2',
+        frameGeometry: {x: 1100, y: 100, width: 800, height: 400}
+    });
+    const straddlingHarness = harness({manageClasses: 'editor'}, {
+        areas: {'DP-2': {x: 1200, y: 0, width: 1000, height: 700}}
+    });
+    straddlingHarness.add(straddling);
+    fireShortcut(straddlingHarness, 'Toggle Float', straddling);
+    assert.deepEqual(geometry(straddling), {x: 1200, y: 100, width: 800, height: 400});
+
+    const oversized = makeWindow('oversized', {
+        frameGeometry: {x: -100, y: -100, width: 1600, height: 900}
+    });
+    const oversizedHarness = harness({manageClasses: 'editor'}, {
+        areas: {'DP-1': {x: 0, y: 0, width: 1200, height: 800}}
+    });
+    oversizedHarness.add(oversized);
+    fireShortcut(oversizedHarness, 'Toggle Float', oversized);
+    assert.deepEqual(geometry(oversized), {x: 0, y: 0, width: 1200, height: 800});
+});
+
 test('moving the only tiled window removes its old context tree', () => {
     const h = harness({manageClasses: 'editor', gapOuter: 8}, {
         areas: {'DP-1': {x: 0, y: 0, width: 1200, height: 800},
@@ -444,4 +526,28 @@ test('observed output changes only record context until startup adoption', () =>
     const b = makeWindow('b', {output: 'DP-2'});
     h.add(b);
     assert.ok(a.geometryWrites + b.geometryWrites > 0);
+});
+
+test('a window already moved to another output is not pulled back by a pending reflow', () => {
+    const h = harness({manageClasses: 'editor', gapInner: 8, gapOuter: 8}, {
+        areas: {
+            'DP-1': {x: 0, y: 0, width: 1200, height: 800},
+            'DP-2': {x: 1200, y: 0, width: 1000, height: 800}
+        }
+    });
+    const a = makeWindow('a');
+    const b = makeWindow('b');
+    const c = makeWindow('c');
+    h.add(a);
+    h.add(b);
+    h.add(c);
+    a.output = 'DP-2';
+    b.output = 'DP-2';
+    const writes = a.geometryWrites;
+    b.outputChanged.emit();
+    assert.equal(a.geometryWrites, writes, 'pending window is left alone, not forced back');
+    a.outputChanged.emit();
+    assert.ok(geometry(a).x >= 1200);
+    assert.ok(geometry(b).x >= 1200);
+    assert.deepEqual(geometry(c), {x: 8, y: 8, width: 1184, height: 784});
 });

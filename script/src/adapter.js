@@ -155,11 +155,19 @@
         };
     }
 
+    function onContextOutput(window, context) {
+        return outputName(property(window, "output")) === context.outputName;
+    }
+
     function applyContext(context) {
         var rects = api.tree.layout(context.tree, workArea(context), contextGaps(context));
         context.ids.forEach(function (id) {
             var state = states.get(id);
             if (!state || state.mode !== "tiled" || !rects[id]) { return; }
+            if (!onContextOutput(state.window, context)) {
+                log("debug", "skip " + id + ": output changed, reassignment pending");
+                return;
+            }
             setGeometry(state.window, rects[id]);
         });
     }
@@ -266,6 +274,7 @@
                     context: context,
                     mode: "tiled",
                     floatGeometry: roundedRect(property(window, "frameGeometry")),
+                    floatWorkArea: workArea(context),
                     expected: new api.ExpectedGeometry(),
                     drag: null,
                     reassigning: false
@@ -293,6 +302,7 @@
             context: context,
             mode: "tiled",
             floatGeometry: roundedRect(property(window, "frameGeometry")),
+            floatWorkArea: workArea(context),
             expected: new api.ExpectedGeometry(),
             drag: null,
             reassigning: false
@@ -335,8 +345,15 @@
         if (state.mode === "float") { return; }
         state.mode = "float";
         state.context.ids = state.context.ids.filter(function (id) { return id !== state.id; });
-        rebuild(state.context);
-        if (state.floatGeometry) { setGeometry(state.window, state.floatGeometry); }
+        if (state.context.adopted) {
+            state.context.tree = api.tree.remove(state.context.tree, state.id);
+        } else {
+            rebuild(state.context);
+        }
+        if (state.floatGeometry) {
+            state.floatGeometry = restoreFloatGeometry(state);
+            setGeometry(state.window, state.floatGeometry);
+        }
         if (state.context.ids.length) { applyContext(state.context); }
         else { discardIfEmpty(state.context); }
     }
@@ -344,11 +361,25 @@
     function tiling(state) {
         if (state.mode === "tiled") { applyContext(state.context); return; }
         state.floatGeometry = roundedRect(property(state.window, "frameGeometry"));
+        state.floatWorkArea = workArea(state.context);
         state.mode = "tiled";
         contexts.set(state.context.key, state.context);
         state.context.ids.push(state.id);
         rebuild(state.context);
         applyContext(state.context);
+    }
+
+    function restoreFloatGeometry(state) {
+        var area = workArea(state.context);
+        if (state.floatGeometry && !api.geometry.mostlyInside(state.floatGeometry, area)) {
+            state.floatGeometry = api.geometry.translateClamp(state.floatGeometry,
+                state.floatWorkArea || area, area);
+        } else if (state.floatGeometry) {
+            state.floatGeometry = api.geometry.translateClamp(state.floatGeometry,
+                area, area);
+        }
+        state.floatWorkArea = area;
+        return state.floatGeometry;
     }
 
     function watchWindow(state) {
@@ -409,22 +440,24 @@
         }
         state.reassigning = true;
         try {
+            if (state.floatGeometry && previous.outputName !== next.outputName) {
+                var oldArea = workArea(previous);
+                var newArea = workArea(next);
+                state.floatGeometry = api.geometry.translateClamp(
+                    state.floatGeometry, oldArea, newArea);
+                state.floatWorkArea = newArea;
+            }
             if (state.mode === "tiled") {
                 previous.ids = previous.ids.filter(function (id) { return id !== state.id; });
                 previous.tree = api.tree.remove(previous.tree, state.id);
+                if (!previous.adopted) { rebuild(previous); }
             }
             discardIfEmpty(previous);
             state.context = next;
             if (state.mode === "tiled") {
-                if (next.ids.indexOf(state.id) < 0) { next.ids.push(state.id); }
-                if (!next.tree) { next.tree = api.tree.insert(null, state.id, null, "right"); }
-                else {
-                    var target = next.ids.filter(function (id) { return id !== state.id; }).pop();
-                    if (target) {
-                        next.tree = api.tree.insert(next.tree, state.id, target, "right");
-                    }
-                    else { next.tree = api.tree.insert(null, state.id, null, "right"); }
-                }
+                next.ids = next.ids.filter(function (id) { return id !== state.id; });
+                next.ids.push(state.id);
+                rebuild(next);
             }
             if (previous.ids.length) { applyContext(previous); }
             if (state.mode === "tiled") { applyContext(next); }
@@ -457,6 +490,7 @@
                 } else {
                     context.tree = api.tree.insert(context.tree, state.id, target, hit.edge);
                 }
+                context.adopted = true;
                 applyContext(context);
             } else {
                 applyContext(context);
@@ -476,6 +510,7 @@
         } else {
             context.tree = api.tree.insert(null, state.id, null, "right");
         }
+        context.adopted = true;
     }
 
     function includesId(node, id) {
@@ -512,6 +547,7 @@
         var ratio = (boundary - start - (inFirst ? 0 : Math.min(gaps.inner, size))) /
             length;
         context.tree = api.tree.setRatio(context.tree, path, ratio);
+        context.adopted = true;
         applyContext(context);
     }
 
@@ -539,6 +575,7 @@
         var area = workArea(state.context);
         var rect = api.snapRect(action, area, contextGaps(state.context));
         state.floatGeometry = rect;
+        state.floatWorkArea = area;
         setGeometry(state.window, rect);
     }
 
@@ -546,6 +583,7 @@
         var state = activeState();
         if (!state || state.mode !== "tiled") { return; }
         state.context.tree = api.tree.dockToSide(state.context.tree, state.id, side);
+        state.context.adopted = true;
         applyContext(state.context);
     }
 
