@@ -98,6 +98,13 @@ if [ "$DRY_RUN" = true ]; then
     say "DRY-RUN: activate-live.js (index 2); check-s9b.js (promoted, others stay)"
     say "DRY-RUN: invoke Weave Stage Cycle Next; check-s9c.js"
     say "DRY-RUN: invoke Weave Layout Master; check-s9d.js (stage order, master rects)"
+    say "DRY-RUN: invoke Weave Layout Master; order-s7.js; activate-live.js; invoke Weave Promote;"
+    say "DRY-RUN: check-s10a.js (stack window becomes master)"
+    say "DRY-RUN: activate-live.js; invoke Weave Move Down; check-s10b.js (swap with neighbour)"
+    say "DRY-RUN: activate-live.js; invoke Weave Resize Grow Width / Shrink Width;"
+    say "DRY-RUN: check-s10c.js and check-s10d.js (master edge moves by the step and back)"
+    say "DRY-RUN: invoke Weave Master More / Master Fewer; check-s10e.js and check-s10f.js"
+    say "DRY-RUN: invoke Weave Float All twice; check-s10g.js (floated), check-s10h.js (tiled)"
     say "DRY-RUN: journalctl result parsing, summary table, optional JSON array"
     say "DRY-RUN: kill <recorded PID> and wait <recorded PID> for each launch"
     say "DRY-RUN: disable/remove Weave, delete four harness config keys, reconfigure"
@@ -225,7 +232,7 @@ run_script() {
     else
         cat "$TMP_DIR/check-prefix.js" > "$TMP_DIR/$name.js"
         case "$source_file" in
-            check-s7*|check-s8*|check-s9*|activate-live.js|move-s8.js)
+            check-s7*|check-s8*|check-s9*|check-s10*|activate-live.js|move-s8.js)
                 printf '%s\n' "$LIVE_PRE" >> "$TMP_DIR/$name.js" ;;
         esac
         cat "$JS_DIR/$source_file" >> "$TMP_DIR/$name.js"
@@ -277,6 +284,7 @@ snapshot_first_size() {
 }
 
 SCENARIOS="S1 S2 S3 S4 S5 S6 S7a S7b S7c S7d S8a S8b S8c S9a S9b S9c S9d"
+SCENARIOS="$SCENARIOS S10a S10b S10c S10d S10e S10f S10g S10h"
 
 summary() {
     statuses=
@@ -301,7 +309,7 @@ summary() {
         node -e 'const fs=require("fs");const rows=fs.readFileSync(process.argv[1],"utf8")
             .trim().split(/\n/).filter(Boolean).map(x=>JSON.parse(x.slice(11)));
             const keep={};rows.forEach(x=>{
-                if(/^S[1-9][a-d]?$/.test(x.scenario))keep[x.scenario]=x;});
+                if(/^S[0-9]+[a-h]?$/.test(x.scenario))keep[x.scenario]=x;});
             process.stdout.write(JSON.stringify(Object.keys(keep).sort().map(k=>keep[k]))+"\n");' \
             "$TMP_DIR/results"
     fi
@@ -422,6 +430,55 @@ run_script check-s9c.js weave-live-check-s9c S9c
 invoke "Weave Layout Master"
 sleep 1
 run_script check-s9d.js weave-live-check-s9d S9d
+# S10: keyboard actions on the master layout. Orders are tracked here: the window ids in
+# layout order before each step (from the position sort), then permuted as the step does.
+LIVE_PRE=
+invoke "Weave Layout Master"
+sleep 1
+LAST_STEP_LINE=
+run_script order-s7.js weave-live-order-s10 ''
+LIVE_IDS=${LAST_STEP_LINE#WEAVE_LIVE_STEP ids }
+set -- $LIVE_IDS
+I0=$1; I1=$2; I2=$3
+ids_js() { printf '"%s",' "$@" | sed 's/,$//'; }
+activate_in() {
+    LIVE_PRE="var liveIds = [$1]; var activateIndex = $2;"
+    run_script activate-live.js weave-live-activate-s10 ''
+    sleep 0.5
+}
+say "S10 window order (master layout): $LIVE_IDS"
+ORDER1=$(ids_js "$I2" "$I0" "$I1")
+ORDER2=$(ids_js "$I2" "$I1" "$I0")
+activate_in "$(ids_js "$I0" "$I1" "$I2")" 2
+invoke "Weave Promote"
+sleep 1
+LIVE_PRE="var liveIds = [$ORDER1];"
+run_script check-s10a.js weave-live-check-s10a S10a
+activate_in "$ORDER1" 1
+invoke "Weave Move Down"
+sleep 1
+LIVE_PRE="var liveIds = [$ORDER2];"
+run_script check-s10b.js weave-live-check-s10b S10b
+activate_in "$ORDER2" 0
+invoke "Weave Resize Grow Width"
+sleep 1
+LIVE_PRE="var liveIds = [$ORDER2];"
+run_script check-s10c.js weave-live-check-s10c S10c
+invoke "Weave Resize Shrink Width"
+sleep 1
+run_script check-s10d.js weave-live-check-s10d S10d
+invoke "Weave Master More"
+sleep 1
+run_script check-s10e.js weave-live-check-s10e S10e
+invoke "Weave Master Fewer"
+sleep 1
+run_script check-s10f.js weave-live-check-s10f S10f
+invoke "Weave Float All"
+sleep 1
+run_script check-s10g.js weave-live-check-s10g S10g
+invoke "Weave Float All"
+sleep 1
+run_script check-s10h.js weave-live-check-s10h S10h
 # Let the 2 s save debounce fire before cleanup unloads the script.
 sleep 3
 summary

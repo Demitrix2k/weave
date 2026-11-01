@@ -318,7 +318,16 @@
         return 2 * half / available;
     }
 
-    const api = {addWindow, removeWindow, promote, cycle, pin, unpin, layout,
+    // Focus ratio (not clamped) after the focus window grows by delta px (negative: shrinks).
+    function focusRatioAfterGrow(workArea, gaps, ratio, delta) {
+        gaps = gaps || {};
+        const rect = g.workRect(workArea, gaps);
+        const gap = Math.min(Math.max(0, gaps.inner || 0), Math.floor(rect.width / 2));
+        const available = rect.width - 2 * gap;
+        return available <= 0 ? null : ratio + delta / available;
+    }
+
+    const api = {addWindow, removeWindow, promote, cycle, pin, unpin, layout, focusRatioAfterGrow,
         order, fromOrder, swap, layoutStacked, focusRatioForEdge};
     return Object.assign({}, api, {stage: api});
 });

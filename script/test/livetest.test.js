@@ -32,7 +32,10 @@ const scenarioFiles = {
 const liveFiles = {
     S7a: 'check-s7a.js', S7b: 'check-s7b.js', S7c: 'check-s7c.js', S7d: 'check-s7d.js',
     S8a: 'check-s8a.js', S8b: 'check-s8b.js', S8c: 'check-s8c.js',
-    S9a: 'check-s9a.js', S9b: 'check-s9b.js', S9c: 'check-s9c.js', S9d: 'check-s9d.js'
+    S9a: 'check-s9a.js', S9b: 'check-s9b.js', S9c: 'check-s9c.js', S9d: 'check-s9d.js',
+    S10a: 'check-s10a.js', S10b: 'check-s10b.js', S10c: 'check-s10c.js',
+    S10d: 'check-s10d.js', S10e: 'check-s10e.js', S10f: 'check-s10f.js',
+    S10g: 'check-s10g.js', S10h: 'check-s10h.js'
 };
 const movedFile = 'check-s8m.js';
 const helperFiles = ['order-s7.js', 'activate-live.js', 'move-s8.js'];
@@ -167,6 +170,21 @@ function stageLiveRects(scenario, ids) {
     return ids.map(id => result.rects[id]);
 }
 
+// The S10 steps by hand: the master column grows from 1522 to 1598 px (the step is 76), two
+// masters stack on the left, and Float All leaves the windows at free rectangles.
+function keyLiveRects(scenario, ids) {
+    const rectsFor = tree => {
+        const rects = core.tree.layout(tree, dpArea, gaps);
+        return ids.map(id => rects[id]);
+    };
+    if (scenario === 'S10c') { return rectsFor(core.tree.masterStack(ids, 1, 1598 / 2536)); }
+    if (scenario === 'S10e') { return rectsFor(core.tree.masterStack(ids, 2, 0.6)); }
+    if (scenario === 'S10g') {
+        return ids.map((id, index) => ({x: 100 + 40 * index, y: 120, width: 300, height: 400}));
+    }
+    return masterOrder(ids);
+}
+
 // Rects the live checks expect after each step, for ids in master-layout order.
 function liveRects(scenario, ids) {
     const layoutFor = name => {
@@ -179,6 +197,7 @@ function liveRects(scenario, ids) {
     if (scenario === 'S7c') { return layoutFor('spiral'); }
     if (scenario === 'S7d') { return layoutFor('master'); }
     if (scenario.indexOf('S9') === 0) { return stageLiveRects(scenario, ids); }
+    if (scenario.indexOf('S10') === 0) { return keyLiveRects(scenario, ids); }
     const template = templates[Object.keys(templates)[0]];
     const slots = template.slots.length;
     // Activation order 1, 2, 0: the active window 0, then 2 (the most recent).
@@ -204,7 +223,8 @@ function evaluateLive(scenario, fail, rawWindows, file, movedOk) {
         output: {name: 'DP-1'},
         frameGeometry: Object.assign({}, rects[index])
     }));
-    if (fail) { windows[2].frameGeometry.x += 1; }
+    if (fail && scenario === 'S10g') { windows[1].frameGeometry = masterOrder(ids)[1]; }
+    else if (fail) { windows[2].frameGeometry.x += 1; }
     const workspace = {
         screens: [{name: 'DP-1'}],
         windowList: () => rawWindows ? [] : windows,
@@ -224,7 +244,7 @@ function evaluateLive(scenario, fail, rawWindows, file, movedOk) {
     return JSON.parse(record.slice('WEAVE_LIVE '.length));
 }
 
-test('S7, S8 and S9 live checks pass on the right geometry and fail on a nudge', () => {
+test('S7 to S10 live checks pass on the right geometry and fail on a nudge', () => {
     Object.keys(liveFiles).forEach(scenario => {
         const good = evaluateLive(scenario, false);
         assert.equal(good.scenario, scenario);
@@ -232,6 +252,38 @@ test('S7, S8 and S9 live checks pass on the right geometry and fail on a nudge',
         assert.equal(evaluateLive(scenario, true).status, 'FAIL', scenario + ' FAIL case');
         assert.equal(evaluateLive(scenario, false, true).status, 'FAIL');
     });
+});
+
+test('S10 fails when the master grew by another amount than the step', () => {
+    const ids = ['{a}', '{b}', '{c}'];
+    const wrong = core.tree.layout(core.tree.masterStack(ids, 1, 1602 / 2536), dpArea, gaps);
+    const windows = ids.map((id, index) => ({
+        resourceClass: expected.resourceClass, internalId: id, desktop: 1,
+        output: {name: 'DP-1'}, frameGeometry: Object.assign({}, wrong[id])
+    }));
+    const lines = [];
+    expected.output = line => lines.push(line);
+    vm.runInNewContext(fs.readFileSync(path.resolve(__dirname,
+        '../livetest/js/check-s10c.js'), 'utf8'), {
+        Weave: core, KWin: {PlacementArea: 0}, JSON, Math, String, Object, liveIds: ids,
+        workspace: {screens: [{name: 'DP-1'}], windowList: () => windows,
+            clientArea: () => dpArea}
+    });
+    expected.output = null;
+    assert.equal(JSON.parse(lines[0].slice('WEAVE_LIVE '.length)).status, 'FAIL');
+});
+
+test('S10 constants match the adapter and the config default', () => {
+    const adapter = fs.readFileSync(path.resolve(__dirname, '../src/adapter.js'), 'utf8');
+    const live = fs.readFileSync(path.resolve(__dirname,
+        '../livetest/js/expected.js'), 'utf8');
+    const xml = fs.readFileSync(path.resolve(__dirname,
+        '../contents/config/main.xml'), 'utf8');
+    assert.ok(live.includes('RESIZE_STEP = 76'));
+    assert.ok(live.includes('MIN_PANE = 100'));
+    assert.ok(adapter.includes('MIN_PANE = 100'));
+    assert.ok(adapter.includes('readConfigValue("resizeStep", 76)'));
+    assert.match(xml, /name="resizeStep" type="Int">\s*<default>76<\/default>/);
 });
 
 test('S8m reports whether the moved window left its slot; S8b needs it', () => {
@@ -279,11 +331,14 @@ test('the harness runs every new scenario and only Weave shortcuts', () => {
         '../livetest/livetest.sh'), 'utf8');
     Object.values(liveFiles).forEach(file => assert.ok(source.includes(file), file));
     ['Layout Columns', 'Layout Monocle', 'Layout Spiral', 'Layout Master',
-        'Arrange Next', 'Arrange Reapply', 'Arrange Release'].forEach(name =>
+        'Arrange Next', 'Arrange Reapply', 'Arrange Release', 'Promote', 'Move Down',
+        'Resize Grow Width', 'Resize Shrink Width', 'Master More', 'Master Fewer',
+        'Float All'].forEach(name =>
         assert.ok(source.includes('invoke "Weave ' + name + '"'), name));
     const shortcuts = source.match(/invoke "[^"]*"/g) || [];
     shortcuts.forEach(call => assert.match(call, /^invoke "Weave /));
     assert.match(source, /S7a S7b S7c S7d S8a S8b S8c S9a S9b S9c S9d/);
+    assert.match(source, /S10a S10b S10c S10d S10e S10f S10g S10h/);
     ['Layout Stage', 'Stage Cycle Next'].forEach(name =>
         assert.ok(source.includes('invoke "Weave ' + name + '"'), name));
 });

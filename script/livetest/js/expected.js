@@ -385,6 +385,59 @@ var KCALC_RESOURCE_CLASS = "org.kde.kcalc";
         return pass;
     }
 
+    // Must equal the adapter's resizeStep default (main.xml) and its MIN_PANE.
+    var RESIZE_STEP = 76;
+    var MIN_PANE = 100;
+
+    function keyTree(ids, masters) {
+        return coreApi.tree.generate("master", ids.slice(),
+            {masterRatio: 0.6, nMaster: masters});
+    }
+
+    function treeRects(tree, ids, area) {
+        var rects = coreApi.tree.layout(tree, area, GAPS);
+        return ids.map(function (id) { return rounded(rects[id]); });
+    }
+
+    function resizedTree(tree, ids, area, delta) {
+        return coreApi.tree.resizeBy(tree, area, GAPS, ids[0], "h", delta, MIN_PANE);
+    }
+
+    // Replays the keyboard action of each S10 step on the core. ids are in layout order.
+    function keyExpected(scenario, ids, area) {
+        var base = keyTree(ids, 1);
+        var grown = resizedTree(base, ids, area, RESIZE_STEP);
+        var trees = {S10c: grown, S10d: resizedTree(grown, ids, area, -RESIZE_STEP),
+            S10e: keyTree(ids, 2)};
+        return treeRects(trees[scenario] || base, ids, area);
+    }
+
+    function keyStep(scenario, context) {
+        var actualRects = context.windows.map(actual);
+        var tiled = treeRects(keyTree(context.ids, 1), context.ids, context.area);
+        var expected = keyExpected(scenario, context.ids, context.area);
+        var pass;
+        if (scenario === "S10g") {
+            // Floating windows return to rectangles the harness does not know.
+            expected = [];
+            pass = actualRects.every(function (rect) {
+                return !tiled.some(function (item) { return equalRect(item, rect); });
+            });
+        } else if (scenario === "S10h") {
+            // The adapter tiles in its own arrival order, so only the set is known.
+            expected = tiled;
+            pass = sameRectSet(tiled, actualRects);
+        } else {
+            pass = allEqual(expected, actualRects);
+        }
+        var grew = actualRects[0].width - tiled[0].width;
+        if (scenario === "S10c") { pass = pass && grew === RESIZE_STEP; }
+        if (scenario === "S10d") { pass = pass && grew === 0; }
+        if (scenario === "S10e") { pass = pass && actualRects[0].x === actualRects[1].x; }
+        emit(scenario, pass, expected, actualRects, {grew: grew});
+        return pass;
+    }
+
     function runLive(scenario, targetWorkspace, ids, engine, templates, movedOk) {
         coreApi = engine || coreApi;
         var context = liveContext(targetWorkspace, ids || []);
@@ -396,6 +449,8 @@ var KCALC_RESOURCE_CLASS = "org.kde.kcalc";
                 {error: "precondition: window was not displaced"});
         } else if (!context) {
             emit(scenario, false, [], [], {error: "windows missing"});
+        } else if (scenario.indexOf("S10") === 0) {
+            pass = keyStep(scenario, context);
         } else if (scenario.indexOf("S9") === 0) {
             pass = stageStep(scenario, context);
         } else if (scenario.indexOf("S7") === 0) {

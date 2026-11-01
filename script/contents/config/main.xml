@@ -29,6 +29,11 @@
     <entry name="focusRatio" type="Double">
       <default>0.6</default>
     </entry>
+    <entry name="resizeStep" type="Int">
+      <default>76</default>
+      <min>8</min>
+      <max>400</max>
+    </entry>
     <entry name="defaultLayout" type="String">
       <choices>
         <choice name="master"/>

@@ -273,6 +273,32 @@ function ratioForSide(t, area, gaps, path, side, coord, minPane) {
   const low = Math.min(0.5, (minPane === undefined ? 100 : minPane) / length);
   return Math.max(low, Math.min(1 - low, ratio));
 }
+// Tree after moving the nearest ancestor split on the axis ('h' or 'v') so that the window
+// grows by delta px (negative: shrinks). Each pane keeps minPane px. Null without such a split.
+function resizeBy(t, area, gaps, id, axis, delta, minPane) {
+  const chain = ancestry(t, id);
+  const found = chain && chain.filter(item => item.node.dir === axis).pop();
+  if (!found)
+    return null;
+  const horizontal = axis === 'h';
+  const side = found.key === 'a' ? (horizontal ? 'right' : 'bottom')
+                                 : (horizontal ? 'left' : 'top');
+  const rect = layout(t, area, gaps)[id];
+  const edge = {
+    right : rect.x + rect.width,
+    left : rect.x,
+    bottom : rect.y + rect.height,
+    top : rect.y
+  }[side];
+  const outward = found.key === 'a' ? delta : -delta;
+  const ratio = ratioForSide(t, area, gaps, found.path, side, edge + outward, minPane);
+  return ratio === null ? null : setRatio(t, found.path, ratio);
+}
+// Master count after changing it by delta: at least 1, at most windows - 1 (but not below 1).
+function clampMasterCount(count, delta, windows) {
+  const wanted = Math.floor(count === undefined ? 1 : count) + (delta || 0);
+  return Math.max(1, Math.min(Math.max(1, windows - 1), wanted));
+}
 function line(list, dir) {
   if (!list.length)
     return null;
@@ -458,6 +484,8 @@ const api = {
   edgeAt,
   edgeForSide,
   ratioForSide,
+  resizeBy,
+  clampMasterCount,
   masterStack,
   columns,
   monocle,

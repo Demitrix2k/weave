@@ -102,3 +102,16 @@ its private event queue changes when recording or consuming expectations.
   mode clears it. Multiple groups are independent and may occupy the same area.
 - ExpectedGeometry queues multiple pending writes, allowing out-of-order events;
   unmatched events do not erase expectations. clear explicitly discards stale IDs.
+
+## Keyboard action helpers
+
+- `geometry.neighbour(rects, id, 'left'|'right'|'up'|'down')`: nearest rectangle whose centre
+  and both edges lie further that way (nearest centre wins, first key on a tie), or `null`.
+- `geometry.resizeFloat(rect, area, 'h'|'v', delta, minSize)`: floating resize, half per side,
+  clamped inside the area and to `minSize`.
+- `tree.resizeBy(t, area, gaps, id, 'h'|'v', delta, minPane)`: moves the nearest ancestor split
+  on the axis so the window grows by `delta` px (negative shrinks); `null` without such a split.
+- `tree.clampMasterCount(count, delta, windows)` (1 to windows - 1, never below 1); the master
+  count itself is `tree.generate('master', ids, {nMaster})` / `tree.masterStack(list, n, ratio)`.
+- `stage.focusRatioAfterGrow(area, gaps, ratio, delta)`: focus ratio after the focus window
+  grows by `delta` px (the caller clamps it).

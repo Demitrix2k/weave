@@ -76,6 +76,37 @@ focus, otherwise the first); leaving re-derives a tree from the current order.
 - Persistence: Stage windows are saved as tiled. The layout name, the cell
   assignment, pins and the per-context focus ratio are not persisted.
 
+## Keyboard actions (`resizeStep`, default 76, range 8 to 400)
+
+The five actions Krohnkite had. All shortcuts have empty default keys. They act on the
+active window and do nothing for windows that are not managed, and (apart from Float All)
+for floating or arranged windows. Move, Resize, Master and Promote also do nothing in a
+context that has an arrangement.
+
+- `Weave Move Left` / `Move Right` / `Move Up` / `Move Down`: the active tiled window swaps
+  with the nearest window in that direction, found from the layout rectangles (a window
+  counts only if its centre and both edges lie further that way; the nearest centre wins).
+  At the work-area edge nothing happens. In Stage the window swaps in place with the
+  neighbouring cell (pinned cells stay). Marks the context as user-edited, like a drag swap.
+- `Weave Resize Grow Width` / `Shrink Width` / `Grow Height` / `Shrink Height`: moves the
+  edge of the nearest ancestor split on that axis by `resizeStep` px, so this window grows
+  or shrinks by the step (each pane keeps 100 px). No split on that axis means no change
+  (a lone window, monocle, a master window's height). A floating window grows or shrinks
+  by the step in total (half per side), stays inside the work area and keeps at least
+  150 px. In Stage only the focus window's width works: it changes the context's focus
+  ratio (0.3 to 0.8); rail windows and the height keys do nothing.
+- `Weave Master More` / `Master Fewer`: master-window count of the context for the
+  `master` layout (at least 1, at most windows minus one but never below 1). The layout
+  is re-derived from the current order; other layouts ignore the shortcuts. The count
+  is kept per context and is not persisted.
+- `Weave Float All`: if any managed window in the active window's context is tiled, all
+  of them become floating (each returns to its remembered float rectangle, as with
+  Toggle Float); otherwise every floating window tiles again in arrival order. The
+  context keeps its layout. Windows of other contexts and arranged windows are not touched.
+- `Weave Promote`: master, columns, spiral and monocle move the active window to the
+  first position of the context's order and re-derive the tree (clears the "user edited"
+  state); Stage swaps it into the focus slot, as an activation does.
+
 ## Arrangements
 
 Shortcuts (empty default keys): `Weave Arrange Next`, `Weave Arrange Previous`

@@ -182,7 +182,7 @@ test('script is inert by default and every shortcut has an empty default key', (
     const h = harness();
     h.add(makeWindow('a'));
     assert.deepEqual(geometry(h.windows[0]), {x: 0.4, y: 0.2, width: 799.6, height: 600.5});
-    assert.equal(h.shortcuts.size, 32);
+    assert.equal(h.shortcuts.size, 44);
     h.shortcuts.forEach(shortcut => assert.equal(shortcut.key, ''));
 });
 
@@ -1687,4 +1687,534 @@ test('stage never assigns geometry in a loop: activation and cycling write once 
     writes = totalWrites(windows);
     windows.forEach(window => window.frameGeometryChanged.emit());
     assert.equal(totalWrites(windows), writes);
+});
+
+// ---- keyboard actions: move, resize, master count, float all, promote ----
+
+const master3 = layoutRects.master[3];
+
+function gappedWith(extra, layout) {
+    return Object.assign({defaultLayout: layout || 'master'}, gapped, extra || {});
+}
+
+function setup(count, layout, extra) {
+    const h = harness(gappedWith(extra, layout));
+    return {h, windows: addWindows(h, count)};
+}
+
+function fire(h, name, window) {
+    fireShortcut(h, name, window);
+}
+
+function rectsOf(windows) {
+    return windows.map(rectOf);
+}
+
+function assertNoWrites(windows, action) {
+    const before = totalWrites(windows);
+    action();
+    assert.equal(totalWrites(windows), before);
+}
+
+test('keys: shortcut names for the five actions exist with empty default keys', () => {
+    const h = harness();
+    ['Move Left', 'Move Right', 'Move Up', 'Move Down', 'Resize Grow Width',
+        'Resize Shrink Width', 'Resize Grow Height', 'Resize Shrink Height', 'Master More',
+        'Master Fewer', 'Float All', 'Promote'].forEach(name => {
+        assert.ok(h.shortcuts.has('Weave ' + name), name);
+        assert.equal(h.shortcuts.get('Weave ' + name).key, '');
+    });
+});
+
+test('move: master layout swaps with the nearest neighbour in each direction', () => {
+    const {h, windows} = setup(3);
+    const [a, b, c] = windows;
+    fire(h, 'Move Right', a);
+    assert.deepEqual(rectsOf(windows), [master3[1], master3[0], master3[2]]);
+    fire(h, 'Move Left', a);
+    assert.deepEqual(rectsOf(windows), master3);
+    fire(h, 'Move Down', b);
+    assert.deepEqual(rectsOf(windows), [master3[0], master3[2], master3[1]]);
+    fire(h, 'Move Up', b);
+    assert.deepEqual(rectsOf(windows), master3);
+    fire(h, 'Move Left', c);
+    assert.deepEqual(rectsOf(windows), [master3[2], master3[1], master3[0]]);
+});
+
+test('move: nothing happens at the work-area edge and nothing is written', () => {
+    const {h, windows} = setup(3);
+    const [a, b, c] = windows;
+    assertNoWrites(windows, () => {
+        fire(h, 'Move Left', a);
+        fire(h, 'Move Up', a);
+        fire(h, 'Move Down', a);
+        fire(h, 'Move Right', b);
+        fire(h, 'Move Up', b);
+        fire(h, 'Move Down', c);
+        fire(h, 'Move Right', c);
+    });
+    assert.deepEqual(rectsOf(windows), master3);
+});
+
+test('move: columns and spiral swap with the adjacent window, monocle does nothing', () => {
+    const columns = setup(3, 'columns');
+    fire(columns.h, 'Move Right', columns.windows[0]);
+    const row = layoutRects.columns[3];
+    assert.deepEqual(rectsOf(columns.windows), [row[1], row[0], row[2]]);
+    const spiral = setup(3, 'spiral');
+    fire(spiral.h, 'Move Right', spiral.windows[0]);
+    const grid = layoutRects.spiral[3];
+    assert.deepEqual(rectsOf(spiral.windows), [grid[1], grid[0], grid[2]]);
+    const monocle = setup(3, 'monocle');
+    assertNoWrites(monocle.windows, () => {
+        ['Left', 'Right', 'Up', 'Down'].forEach(side =>
+            fire(monocle.h, 'Move ' + side, monocle.windows[1]));
+    });
+});
+
+test('move: stage swaps the window in place with the neighbouring cell', () => {
+    const {h, windows} = setup(3, 'stage');
+    const [focus, left, right] = windows;
+    fire(h, 'Move Left', focus);
+    assert.deepEqual(rectsOf(windows), [stageRects[3][1], stageRects[3][0], stageRects[3][2]]);
+    fire(h, 'Move Right', focus);
+    assert.deepEqual(rectsOf(windows), stageRects[3]);
+    fire(h, 'Move Right', left);
+    assert.deepEqual(rectsOf(windows), [stageRects[3][1], stageRects[3][0], stageRects[3][2]]);
+    assertNoWrites(windows, () => fire(h, 'Move Right', right));
+    assert.equal(rectOf(right)[0], stageRects[3][2][0]);
+});
+
+test('move: a pinned stage cell stays where it is', () => {
+    const {h, windows} = setup(3, 'stage');
+    fire(h, 'Stage Pin', windows[1]);
+    assertNoWrites(windows.slice(1), () => fire(h, 'Move Right', windows[1]));
+    assert.deepEqual(rectsOf(windows), stageRects[3]);
+});
+
+test('move: floating and arranged windows are left alone', () => {
+    const {h, windows} = setup(3);
+    fire(h, 'Toggle Float', windows[1]);
+    const before = rectsOf(windows);
+    assertNoWrites(windows, () => fire(h, 'Move Left', windows[1]));
+    assert.deepEqual(rectsOf(windows), before);
+    const arranged = harness(gapped);
+    const set = activatedWindows(arranged, 3);
+    fire(arranged, 'Arrange Next', set[2]);
+    assertNoWrites(set, () => ['Left', 'Right', 'Up', 'Down'].forEach(side =>
+        fire(arranged, 'Move ' + side, set[2])));
+});
+
+test('move: marks the context as edited so an arrival is inserted, not re-derived', () => {
+    const {h, windows} = setup(3);
+    fire(h, 'Move Right', windows[0]);
+    const late = makeWindow('late');
+    h.add(late);
+    assert.deepEqual(rectOf(windows[2]), [722, 405, 231, 388]);
+    assert.deepEqual(rectOf(late), [961, 405, 231, 388]);
+});
+
+test('move: contexts on other outputs are untouched', () => {
+    const {h, windows} = setup(3);
+    const others = [makeWindow('r0', {output: 'DP-2'}), makeWindow('r1', {output: 'DP-2'})];
+    others.forEach(window => h.add(window));
+    const before = rectsOf(others);
+    fire(h, 'Move Right', windows[0]);
+    assert.deepEqual(rectsOf(others), before);
+    assert.deepEqual(rectsOf(windows), [master3[1], master3[0], master3[2]]);
+});
+
+test('resize: master grows and shrinks by the step, the stack follows', () => {
+    const {h, windows} = setup(3);
+    const [a, b, c] = windows;
+    fire(h, 'Resize Grow Width', a);
+    assert.deepEqual(rectsOf(windows), [[8, 8, 782, 785], [798, 8, 394, 389],
+        [798, 405, 394, 388]]);
+    fire(h, 'Resize Shrink Width', a);
+    fire(h, 'Resize Shrink Width', a);
+    assert.deepEqual(rectsOf(windows), [[8, 8, 630, 785], [646, 8, 546, 389],
+        [646, 405, 546, 388]]);
+    fire(h, 'Resize Grow Width', a);
+    assert.deepEqual(rectsOf(windows), master3);
+    assert.ok(b && c);
+});
+
+test('resize: a stack window grows by moving its own left edge', () => {
+    const {h, windows} = setup(3);
+    fire(h, 'Resize Grow Width', windows[1]);
+    assert.deepEqual(rectsOf(windows), [[8, 8, 630, 785], [646, 8, 546, 389],
+        [646, 405, 546, 388]]);
+    fire(h, 'Resize Shrink Width', windows[2]);
+    assert.deepEqual(rectsOf(windows), master3);
+});
+
+test('resize: height moves the separator between the stack windows', () => {
+    const {h, windows} = setup(3);
+    const [a, b, c] = windows;
+    fire(h, 'Resize Grow Height', b);
+    assert.deepEqual(rectsOf([b, c]), [[722, 8, 470, 465], [722, 481, 470, 312]]);
+    fire(h, 'Resize Shrink Height', b);
+    fire(h, 'Resize Shrink Height', b);
+    assert.deepEqual(rectsOf([b, c]), [[722, 8, 470, 313], [722, 329, 470, 464]]);
+    fire(h, 'Resize Grow Height', c);
+    fire(h, 'Resize Shrink Height', c);
+    assert.deepEqual(rectsOf([b, c]), [[722, 8, 470, 313], [722, 329, 470, 464]]);
+    fire(h, 'Resize Grow Height', c);
+    assert.deepEqual(rectsOf([b, c]), [[722, 8, 470, 237], [722, 253, 470, 540]]);
+    assert.deepEqual(rectOf(a), master3[0]);
+});
+
+test('resize: no ancestor split on the axis means no change and no writes', () => {
+    const {h, windows} = setup(3);
+    assertNoWrites(windows, () => {
+        fire(h, 'Resize Grow Height', windows[0]);
+        fire(h, 'Resize Shrink Height', windows[0]);
+    });
+    const single = setup(1);
+    assertNoWrites(single.windows, () => {
+        ['Grow Width', 'Shrink Width', 'Grow Height', 'Shrink Height'].forEach(name =>
+            fire(single.h, 'Resize ' + name, single.windows[0]));
+    });
+    const monocle = setup(3, 'monocle');
+    assertNoWrites(monocle.windows, () => fire(monocle.h, 'Resize Grow Width', monocle.windows[0]));
+    const columns = setup(3, 'columns');
+    assertNoWrites(columns.windows, () =>
+        fire(columns.h, 'Resize Grow Height', columns.windows[1]));
+});
+
+test('resize: columns use the nearest split, so the middle column moves its right edge', () => {
+    const {h, windows} = setup(3, 'columns');
+    fire(h, 'Resize Grow Width', windows[1]);
+    assert.deepEqual(rectsOf(windows), [[8, 8, 392, 785], [408, 8, 464, 785], [880, 8, 312, 785]]);
+    const first = setup(3, 'columns');
+    fire(first.h, 'Resize Grow Width', first.windows[0]);
+    assert.deepEqual(rectsOf(first.windows), [[8, 8, 468, 785], [484, 8, 350, 785],
+        [842, 8, 350, 785]]);
+});
+
+test('resize: each pane keeps 100 px', () => {
+    const {h, windows} = setup(2);
+    for (let index = 0; index < 12; index++) { fire(h, 'Resize Shrink Width', windows[0]); }
+    assert.deepEqual(rectsOf(windows), [[8, 8, 100, 785], [116, 8, 1076, 785]]);
+    for (let index = 0; index < 20; index++) { fire(h, 'Resize Grow Width', windows[0]); }
+    assert.deepEqual(rectsOf(windows), [[8, 8, 1076, 785], [1092, 8, 100, 785]]);
+});
+
+test('resize: resizeStep is configurable and clamped to 8..400', () => {
+    const widths = {40: 666, 1000: 306, 2: 698, abc: 630};
+    Object.keys(widths).forEach(value => {
+        const step = value === 'abc' ? value : Number(value);
+        const {h, windows} = setup(2, 'master', {resizeStep: step});
+        fire(h, 'Resize Shrink Width', windows[0]);
+        assert.equal(rectOf(windows[0])[2], widths[value], value);
+    });
+});
+
+test('resize: marks the context as edited so an arrival is inserted, not re-derived', () => {
+    const {h, windows} = setup(3);
+    fire(h, 'Resize Grow Width', windows[0]);
+    const late = makeWindow('late');
+    h.add(late);
+    assert.deepEqual(rectOf(windows[0]), [8, 8, 782, 785]);
+    assert.equal(rectOf(late)[0], 999);
+});
+
+test('resize: a floating window grows by the step in total, half per side', () => {
+    const {h, windows} = setup(3);
+    const [a, b] = windows;
+    fire(h, 'Toggle Float', b);
+    assert.deepEqual(rectOf(b), [0, 0, 800, 601]);
+    const tiledWrites = a.geometryWrites;
+    fire(h, 'Resize Shrink Width', b);
+    assert.deepEqual(rectOf(b), [38, 0, 724, 601]);
+    fire(h, 'Resize Grow Width', b);
+    fire(h, 'Resize Grow Width', b);
+    assert.deepEqual(rectOf(b), [0, 0, 876, 601]);
+    fire(h, 'Resize Shrink Height', b);
+    assert.deepEqual(rectOf(b), [0, 38, 876, 525]);
+    fire(h, 'Resize Grow Height', b);
+    assert.deepEqual(rectOf(b), [0, 0, 876, 601]);
+    assert.equal(a.geometryWrites, tiledWrites);
+});
+
+test('resize: floating sizes stay inside the work area and at least 150 px', () => {
+    const {h, windows} = setup(2);
+    const b = windows[1];
+    fire(h, 'Toggle Float', b);
+    for (let index = 0; index < 30; index++) { fire(h, 'Resize Shrink Width', b); }
+    assert.equal(rectOf(b)[2], 150);
+    const frozen = b.geometryWrites;
+    fire(h, 'Resize Shrink Width', b);
+    assert.equal(b.geometryWrites, frozen);
+    for (let index = 0; index < 30; index++) { fire(h, 'Resize Grow Width', b); }
+    assert.deepEqual([rectOf(b)[0], rectOf(b)[2]], [0, 1200]);
+    for (let index = 0; index < 30; index++) { fire(h, 'Resize Shrink Height', b); }
+    assert.equal(rectOf(b)[3], 150);
+    for (let index = 0; index < 30; index++) { fire(h, 'Resize Grow Height', b); }
+    assert.deepEqual([rectOf(b)[1], rectOf(b)[3]], [0, 801]);
+});
+
+test('resize: a resized floating window returns to that size after a tile and float', () => {
+    const {h, windows} = setup(2);
+    const b = windows[1];
+    fire(h, 'Toggle Float', b);
+    fire(h, 'Resize Grow Width', b);
+    fire(h, 'Toggle Float', b);
+    assert.deepEqual(rectOf(b), layoutRects.master[2][1]);
+    fire(h, 'Toggle Float', b);
+    assert.deepEqual(rectOf(b), [0, 0, 876, 601]);
+});
+
+test('resize: stage changes only the focus ratio of the focus window, clamped', () => {
+    const {h, windows} = setup(3, 'stage');
+    const [focus, left, right] = windows;
+    fire(h, 'Resize Grow Width', focus);
+    assert.equal(rectOf(focus)[2], 777);
+    assert.deepEqual(rectOf(focus), [211, 8, 777, 785]);
+    assert.deepEqual([left, right].map(rectOf).map(r => [r[1], r[3]]),
+        [[stageRects[3][1][1], stageRects[3][1][3]], [stageRects[3][2][1], stageRects[3][2][3]]]);
+    fire(h, 'Resize Shrink Width', focus);
+    fire(h, 'Resize Shrink Width', focus);
+    assert.deepEqual(rectOf(focus), [287, 8, 625, 785]);
+    for (let index = 0; index < 6; index++) { fire(h, 'Resize Grow Width', focus); }
+    assert.equal(rectOf(focus)[2], 934);
+    for (let index = 0; index < 12; index++) { fire(h, 'Resize Shrink Width', focus); }
+    assert.equal(rectOf(focus)[2], 350);
+});
+
+test('resize: stage rail windows and the height keys do nothing', () => {
+    const {h, windows} = setup(3, 'stage');
+    assertNoWrites(windows, () => {
+        fire(h, 'Resize Grow Width', windows[1]);
+        fire(h, 'Resize Shrink Width', windows[2]);
+        fire(h, 'Resize Grow Height', windows[0]);
+        fire(h, 'Resize Shrink Height', windows[0]);
+    });
+    assert.deepEqual(rectsOf(windows), stageRects[3]);
+});
+
+test('resize: the focus ratio belongs to the context and survives a stage relayout', () => {
+    const h = harness(gappedWith({}, 'stage'));
+    const near = addWindows(h, 3);
+    const far = [0, 1, 2].map(index => makeWindow('r' + index, {output: 'DP-2'}));
+    far.forEach(window => h.add(window));
+    fire(h, 'Resize Grow Width', near[0]);
+    assert.deepEqual(rectsOf(far), stageRects[3]);
+    fire(h, 'Retile', near[0]);
+    assert.equal(rectOf(near[0])[2], 777);
+    h.activate(near[2]);
+    assert.equal(rectOf(near[2])[2], 777);
+});
+
+test('resize: arranged windows are left alone', () => {
+    const h = harness(gapped);
+    const set = activatedWindows(h, 3);
+    fire(h, 'Arrange Next', set[2]);
+    assertNoWrites(set, () => ['Grow Width', 'Shrink Width', 'Grow Height',
+        'Shrink Height'].forEach(name => fire(h, 'Resize ' + name, set[2])));
+});
+
+test('masters: more and fewer change the master column of the master layout', () => {
+    const {h, windows} = setup(5);
+    fire(h, 'Master More', windows[0]);
+    assert.deepEqual(rectsOf(windows), [[8, 8, 706, 389], [8, 405, 706, 388],
+        [722, 8, 470, 259], [722, 275, 470, 255], [722, 538, 470, 255]]);
+    fire(h, 'Master More', windows[0]);
+    assert.deepEqual(rectsOf(windows), [[8, 8, 706, 259], [8, 275, 706, 255],
+        [8, 538, 706, 255], [722, 8, 470, 389], [722, 405, 470, 388]]);
+    fire(h, 'Master More', windows[0]);
+    fire(h, 'Master More', windows[0]);
+    assert.deepEqual(rectsOf(windows)[4], [722, 8, 470, 785]);
+    assertNoWrites(windows, () => fire(h, 'Master More', windows[0]));
+    for (let index = 0; index < 3; index++) { fire(h, 'Master Fewer', windows[0]); }
+    assert.deepEqual(rectsOf(windows), layoutRects.master[5]);
+    assertNoWrites(windows, () => fire(h, 'Master Fewer', windows[0]));
+});
+
+test('masters: one or two windows never get more than one master', () => {
+    [1, 2].forEach(count => {
+        const {h, windows} = setup(count);
+        assertNoWrites(windows, () => fire(h, 'Master More', windows[0]));
+        assert.deepEqual(rectsOf(windows), layoutRects.master[count]);
+    });
+});
+
+test('masters: arrivals and removals respect the count and the maximum', () => {
+    const {h, windows} = setup(3);
+    fire(h, 'Master More', windows[0]);
+    assert.deepEqual(rectsOf(windows), [[8, 8, 706, 389], [8, 405, 706, 388], [722, 8, 470, 785]]);
+    const late = makeWindow('late');
+    h.add(late);
+    assert.deepEqual(rectOf(late), [722, 405, 470, 388]);
+    h.remove(late);
+    h.remove(windows[2]);
+    assert.deepEqual(rectsOf(windows.slice(0, 2)), layoutRects.master[2]);
+    const again = makeWindow('again');
+    h.add(again);
+    assert.deepEqual(rectOf(again), [722, 8, 470, 785]);
+});
+
+test('masters: the count is per context and other layouts ignore the shortcuts', () => {
+    const h = harness(gapped);
+    const near = addWindows(h, 4);
+    const far = [0, 1, 2, 3].map(index => makeWindow('r' + index, {output: 'DP-2'}));
+    far.forEach(window => h.add(window));
+    fire(h, 'Master More', near[0]);
+    assert.deepEqual(rectOf(far[1]), [722, 8, 470, 259]);
+    assert.deepEqual(rectOf(near[1]), [8, 405, 706, 388]);
+    fire(h, 'Layout Columns', near[0]);
+    assertNoWrites(near, () => fire(h, 'Master Fewer', near[0]));
+    fire(h, 'Layout Master', near[0]);
+    assert.deepEqual(rectOf(near[1]), [8, 405, 706, 388]);
+    fire(h, 'Layout Stage', near[0]);
+    assertNoWrites(near, () => fire(h, 'Master More', near[0]));
+});
+
+test('masters: a floating window and the shortcut on it change nothing', () => {
+    const {h, windows} = setup(4);
+    fire(h, 'Toggle Float', windows[3]);
+    assertNoWrites(windows, () => fire(h, 'Master More', windows[3]));
+});
+
+test('float all: floats every tiled window of the context and tiles them again in order', () => {
+    const h = harness(gapped);
+    const frames = [{x: 30, y: 40, width: 500, height: 300},
+        {x: 100, y: 120, width: 400, height: 350},
+        {x: 200, y: 220, width: 450, height: 380}];
+    const windows = frames.map((frame, index) => makeWindow('w' + index, {frameGeometry: frame}));
+    windows.forEach(window => h.add(window));
+    assert.deepEqual(rectsOf(windows), master3);
+    fire(h, 'Move Right', windows[0]);
+    fire(h, 'Float All', windows[1]);
+    assert.deepEqual(rectsOf(windows), frames.map(f => [f.x, f.y, f.width, f.height]));
+    fire(h, 'Float All', windows[2]);
+    assert.deepEqual(rectsOf(windows), master3);
+});
+
+test('float all: one tiled window among floating ones floats the rest', () => {
+    const {h, windows} = setup(3);
+    fire(h, 'Toggle Float', windows[1]);
+    fire(h, 'Float All', windows[0]);
+    windows.forEach(window => assert.deepEqual(rectOf(window), [0, 0, 800, 601]));
+    fire(h, 'Float All', windows[1]);
+    assert.deepEqual(rectsOf(windows), master3);
+});
+
+test('float all: a context without tiled windows tiles its floating ones', () => {
+    const {h, windows} = setup(2);
+    fire(h, 'Toggle Float', windows[0]);
+    fire(h, 'Toggle Float', windows[1]);
+    fire(h, 'Float All', windows[1]);
+    assert.deepEqual(rectsOf(windows), layoutRects.master[2]);
+});
+
+test('float all: keeps the context layout, and stage round-trips', () => {
+    const columns = setup(3, 'columns');
+    fire(columns.h, 'Float All', columns.windows[0]);
+    fire(columns.h, 'Float All', columns.windows[0]);
+    assert.deepEqual(rectsOf(columns.windows), layoutRects.columns[3]);
+    const staged = setup(3, 'stage');
+    fire(staged.h, 'Float All', staged.windows[0]);
+    fire(staged.h, 'Float All', staged.windows[0]);
+    assert.deepEqual(rectsOf(staged.windows), stageRects[3]);
+    const switched = setup(3);
+    fire(switched.h, 'Layout Spiral', switched.windows[0]);
+    fire(switched.h, 'Float All', switched.windows[0]);
+    fire(switched.h, 'Float All', switched.windows[0]);
+    assert.deepEqual(rectsOf(switched.windows), layoutRects.spiral[3]);
+});
+
+test('float all: other contexts and arranged windows stay as they are', () => {
+    const h = harness(gapped);
+    const near = addWindows(h, 2);
+    const far = [makeWindow('r0', {output: 'DP-2'}), makeWindow('r1', {output: 'DP-2'})];
+    far.forEach(window => h.add(window));
+    const before = rectsOf(far);
+    fire(h, 'Float All', near[0]);
+    assert.deepEqual(rectsOf(far), before);
+    fire(h, 'Float All', near[0]);
+    assert.deepEqual(rectsOf(far), before);
+    const arranged = harness(gapped);
+    const set = activatedWindows(arranged, 3);
+    fire(arranged, 'Arrange Next', set[2]);
+    const placed = rectsOf(set);
+    fire(arranged, 'Float All', set[2]);
+    fire(arranged, 'Float All', set[2]);
+    assert.deepEqual(rectsOf(set).slice(1), placed.slice(1));
+});
+
+test('float all: every window is written once per step', () => {
+    const {h, windows} = setup(4);
+    let writes = totalWrites(windows);
+    fire(h, 'Float All', windows[0]);
+    assert.equal(totalWrites(windows) - writes, 4);
+    writes = totalWrites(windows);
+    fire(h, 'Float All', windows[0]);
+    assert.equal(totalWrites(windows) - writes, 4);
+    writes = totalWrites(windows);
+    windows.forEach(window => window.frameGeometryChanged.emit());
+    assert.equal(totalWrites(windows), writes);
+});
+
+test('promote: the active window becomes the first of master, columns and spiral', () => {
+    ['master', 'columns', 'spiral'].forEach(name => {
+        const {h, windows} = setup(3, name);
+        const rects = layoutRects[name][3];
+        fire(h, 'Promote', windows[2]);
+        assert.deepEqual(rectsOf(windows), [rects[1], rects[2], rects[0]], name);
+        fire(h, 'Promote', windows[1]);
+        assert.deepEqual(rectsOf(windows), [rects[2], rects[0], rects[1]], name);
+        assertNoWrites(windows, () => fire(h, 'Promote', windows[1]));
+    });
+});
+
+test('promote: monocle keeps the geometry and the next layout switch shows the new order', () => {
+    const {h, windows} = setup(3, 'monocle');
+    fire(h, 'Promote', windows[2]);
+    windows.forEach(window => assert.deepEqual(rectOf(window), [8, 8, 1184, 785]));
+    fire(h, 'Layout Master', windows[2]);
+    assert.deepEqual(rectsOf(windows), [master3[1], master3[2], master3[0]]);
+});
+
+test('promote: in stage the window takes the focus slot like an activation does', () => {
+    const {h, windows} = setup(3, 'stage');
+    fire(h, 'Promote', windows[2]);
+    assert.deepEqual(rectsOf(windows), [stageRects[3][2], stageRects[3][1], stageRects[3][0]]);
+    assertNoWrites(windows, () => fire(h, 'Promote', windows[2]));
+});
+
+test('promote: floating windows do nothing and a promote re-derives after a move', () => {
+    const {h, windows} = setup(3);
+    fire(h, 'Toggle Float', windows[1]);
+    assertNoWrites(windows, () => fire(h, 'Promote', windows[1]));
+    const moved = setup(3);
+    fire(moved.h, 'Move Right', moved.windows[0]);
+    fire(moved.h, 'Promote', moved.windows[2]);
+    const late = makeWindow('late');
+    moved.h.add(late);
+    assert.deepEqual(rectOf(late), [722, 538, 470, 255]);
+});
+
+test('promote: each context keeps its own order', () => {
+    const h = harness(gapped);
+    const near = addWindows(h, 3);
+    const far = [0, 1, 2].map(index => makeWindow('r' + index, {output: 'DP-2'}));
+    far.forEach(window => h.add(window));
+    fire(h, 'Promote', near[2]);
+    assert.deepEqual(rectsOf(far), master3);
+    assert.deepEqual(rectOf(near[2]), master3[0]);
+});
+
+test('keys: every action writes each window at most once and never loops', () => {
+    const actions = ['Move Right', 'Resize Grow Width', 'Master More', 'Float All', 'Float All',
+        'Promote'];
+    const {h, windows} = setup(4);
+    actions.forEach(name => {
+        const before = totalWrites(windows);
+        fire(h, name, windows[3]);
+        assert.ok(totalWrites(windows) - before <= windows.length, name);
+        const settled = totalWrites(windows);
+        windows.forEach(window => window.frameGeometryChanged.emit());
+        assert.equal(totalWrites(windows), settled, name);
+    });
 });

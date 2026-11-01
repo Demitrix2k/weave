@@ -39,6 +39,8 @@
         edgeAt: tree.edgeAt,
         edgeForSide: tree.edgeForSide,
         ratioForSide: tree.ratioForSide,
+        resizeBy: tree.resizeBy,
+        clampMasterCount: tree.clampMasterCount,
         infer: tree.infer,
         masterStack: tree.masterStack,
         columns: tree.columns,

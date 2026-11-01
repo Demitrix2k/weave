@@ -119,7 +119,63 @@
         return total > 0 && overlapArea(rectangle, area) * 2 > total;
     }
 
+    function isFurther(from, candidate, direction) {
+        const horizontal = direction === 'left' || direction === 'right';
+        const sign = direction === 'left' || direction === 'up' ? -1 : 1;
+        const start = horizontal ? 'x' : 'y';
+        const length = horizontal ? 'width' : 'height';
+        const middle = rectangle => rectangle[start] + rectangle[length] / 2;
+        const end = rectangle => rectangle[start] + rectangle[length];
+        return sign * (candidate[start] - from[start]) > 0 &&
+            sign * (end(candidate) - end(from)) > 0 &&
+            sign * (middle(candidate) - middle(from)) > 0;
+    }
+
+    // ID of the nearest rectangle in a direction (left, right, up, down), or null. A
+    // rectangle counts only if its centre and both edges lie further that way; the nearest
+    // centre (sum of both axis distances) wins and the first in key order breaks ties.
+    function neighbour(rects, id, direction) {
+        const from = rects[id];
+        if (!from) {
+            return null;
+        }
+        const origin = centre(from);
+        let best = null;
+        let bestDistance = Infinity;
+        Object.keys(rects).forEach(other => {
+            if (other === id || !isFurther(from, rects[other], direction)) {
+                return;
+            }
+            const point = centre(rects[other]);
+            const distance = Math.abs(point.x - origin.x) + Math.abs(point.y - origin.y);
+            if (distance < bestDistance) {
+                best = other;
+                bestDistance = distance;
+            }
+        });
+        return best;
+    }
+
+    // Floating resize: the size along the axis ('h' width, 'v' height) changes by delta in
+    // total, half per side, and stays inside the area and at least minSize (a window already
+    // outside those limits is never moved the wrong way).
+    function resizeFloat(rectangle, area, axis, delta, minSize) {
+        const horizontal = axis === 'h';
+        const size = horizontal ? rectangle.width : rectangle.height;
+        const limit = horizontal ? area.width : area.height;
+        const wanted = clamp(size + delta, Math.min(minSize, limit), limit);
+        const next = delta < 0 ? Math.min(size, wanted) : Math.max(size, wanted);
+        const origin = horizontal ? area.x : area.y;
+        const start = Math.round((horizontal ? rectangle.x : rectangle.y) - (next - size) / 2);
+        const placed = clamp(start, origin, origin + limit - next);
+        return horizontal
+            ? rect(placed, rectangle.y, next, rectangle.height)
+            : rect(rectangle.x, placed, rectangle.width, next);
+    }
+
     const api = {
+        neighbour,
+        resizeFloat,
         rect,
         inset,
         contains,

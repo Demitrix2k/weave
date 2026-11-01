@@ -23,6 +23,9 @@
     var MIN_PANE = 100;
     var FOCUS_RATIO_MIN = 0.3;
     var FOCUS_RATIO_MAX = 0.8;
+    var FLOAT_MIN = 150;
+    var RESIZE_STEP_MIN = 8;
+    var RESIZE_STEP_MAX = 400;
     var STAGE_GRADIENT = 0.5;
     var STAGE_RAIL_MIN = {w: 140, h: 110};
     var ownActivation = null;
@@ -107,6 +110,7 @@
                 layout: config.defaultLayout,
                 stage: null,
                 focusRatio: null,
+                nMaster: 1,
                 groups: []
             };
             contexts.set(key, context);
@@ -146,15 +150,22 @@
             persist: configBoolean(readConfigValue("persist", true), true),
             masterRatio: Number(readConfigValue("masterRatio", 0.6)),
             focusRatio: Number(readConfigValue("focusRatio", 0.6)),
+            resizeStep: Number(readConfigValue("resizeStep", 76)),
             defaultLayout: String(readConfigValue("defaultLayout", "master")),
             logLevel: String(readConfigValue("logLevel", "off"))
         };
         if (config.masterRatio < 0 || config.masterRatio > 1) { config.masterRatio = 0.6; }
         config.focusRatio = clampFocusRatio(config.focusRatio, 0.6);
+        config.resizeStep = clampResizeStep(config.resizeStep);
         if (!api.tree.validAnyLayout(config.defaultLayout)) { config.defaultLayout = "master"; }
         if (["off", "info", "debug"].indexOf(config.logLevel) < 0) {
             config.logLevel = "off";
         }
+    }
+
+    function clampResizeStep(value) {
+        if (typeof value !== "number" || isNaN(value)) { return 76; }
+        return Math.max(RESIZE_STEP_MIN, Math.min(RESIZE_STEP_MAX, Math.round(value)));
     }
 
     function clampFocusRatio(value, fallback) {
@@ -261,11 +272,15 @@
         window.frameGeometry = rect;
     }
 
+    function effectiveMasters(context) {
+        return api.tree.clampMasterCount(context.nMaster, 0, context.ids.length);
+    }
+
     function rebuild(context) {
         if (stageLayout(context)) { syncStage(context); }
         else {
             context.tree = api.tree.generate(context.layout, context.ids.slice(),
-                {masterRatio: config.masterRatio});
+                {masterRatio: config.masterRatio, nMaster: effectiveMasters(context)});
         }
         context.adopted = false;
         context.innerGap = null;
@@ -921,7 +936,170 @@
         applyContext(state.context);
     }
 
+    // The active window when it is tiled in a context without an arrangement.
+    function tiledActive() {
+        var state = activeState();
+        if (!state || state.mode !== "tiled" || state.context.groups.length) { return null; }
+        return state;
+    }
+
+    function moveToward(direction) {
+        var state = tiledActive();
+        if (!state) { return; }
+        var context = state.context;
+        var target = api.neighbour(contextRects(context), state.id, direction);
+        if (target === null) { return; }
+        if (stageLayout(context)) {
+            var next = api.stage.swap(context.stage, state.id, target);
+            if (JSON.stringify(next) !== JSON.stringify(context.stage)) {
+                setStage(context, next);
+            }
+            return;
+        }
+        context.tree = api.tree.swap(context.tree, state.id, target);
+        context.adopted = true;
+        applyContext(context);
+    }
+
+    function resizeFloating(state, axis, delta) {
+        var area = workArea(state.context);
+        var current = roundedRect(property(state.window, "frameGeometry"));
+        var next = api.resizeFloat(current, area, axis, delta, FLOAT_MIN);
+        state.floatGeometry = next;
+        state.floatWorkArea = area;
+        if (!api.geometry.equalRects(current, next)) { setGeometry(state.window, next); }
+        scheduleSave();
+    }
+
+    // Only the focus window's width means anything in Stage: it changes the focus ratio.
+    function resizeStageFocus(state, axis, delta) {
+        var context = state.context;
+        if (axis !== "h" || !context.stage || context.stage.focus !== state.id) { return; }
+        var ratio = api.stage.focusRatioAfterGrow(workArea(context), contextGaps(context),
+            stageRatio(context), delta);
+        if (ratio === null) { return; }
+        context.focusRatio = clampFocusRatio(ratio, stageRatio(context));
+        applyContext(context);
+    }
+
+    function resizeByKey(axis, sign) {
+        var state = activeState();
+        if (!state || state.mode === "arranged") { return; }
+        var delta = sign * config.resizeStep;
+        if (state.mode === "float") {
+            resizeFloating(state, axis, delta);
+            return;
+        }
+        var context = state.context;
+        if (context.groups.length) { return; }
+        if (stageLayout(context)) {
+            resizeStageFocus(state, axis, delta);
+            return;
+        }
+        var next = api.tree.resizeBy(context.tree, workArea(context), contextGaps(context),
+            state.id, axis, delta, MIN_PANE);
+        if (!next) { return; }
+        context.tree = next;
+        context.adopted = true;
+        applyContext(context);
+    }
+
+    function changeMasters(delta) {
+        var state = tiledActive();
+        if (!state || state.context.layout !== "master") { return; }
+        var context = state.context;
+        var current = effectiveMasters(context);
+        var next = api.tree.clampMasterCount(current, delta, context.ids.length);
+        if (next === current) { return; }
+        context.nMaster = next;
+        context.ids = orderedIds(context);
+        rebuild(context);
+        applyContext(context);
+        log("info", "masters " + context.key + " -> " + next);
+    }
+
+    function contextStates(context) {
+        var members = [];
+        states.forEach(function (state) {
+            if (state.context.key === context.key) { members.push(state); }
+        });
+        return members;
+    }
+
+    function floatEach(context, members) {
+        members.forEach(function (state) { state.mode = "float"; });
+        context.ids = context.ids.filter(function (id) {
+            return members.indexOf(states.get(id)) < 0;
+        });
+        rebuild(context);
+        members.forEach(function (state) {
+            if (!state.floatGeometry) { return; }
+            state.floatGeometry = restoreFloatGeometry(state);
+            setGeometry(state.window, state.floatGeometry);
+        });
+        if (!context.ids.length) { discardIfEmpty(context); }
+    }
+
+    function tileEach(context, members) {
+        members.sort(function (a, b) { return a.seq - b.seq; });
+        members.forEach(function (state) {
+            state.floatGeometry = roundedRect(property(state.window, "frameGeometry"));
+            state.floatWorkArea = workArea(context);
+            state.mode = "tiled";
+            state.context = context;
+            context.ids.push(state.id);
+        });
+        contexts.set(context.key, context);
+        rebuild(context);
+        applyContext(context);
+    }
+
+    // Floats every tiled window of the active window's context, or, when none is tiled,
+    // tiles the floating ones again in arrival order.
+    function floatAll() {
+        var active = activeState();
+        if (!active) { return; }
+        var context = contexts.get(active.context.key) || active.context;
+        var members = contextStates(context);
+        var tiled = members.filter(function (state) { return state.mode === "tiled"; });
+        if (tiled.length) { floatEach(context, tiled); }
+        else {
+            tileEach(context, members.filter(function (state) { return state.mode === "float"; }));
+        }
+        scheduleSave();
+    }
+
+    function promoteActive() {
+        var state = tiledActive();
+        if (!state) { return; }
+        var context = state.context;
+        if (stageLayout(context)) {
+            promoteActivated(state);
+            return;
+        }
+        var order = orderedIds(context);
+        if (order[0] === state.id) { return; }
+        context.ids = [state.id].concat(order.filter(function (id) { return id !== state.id; }));
+        rebuild(context);
+        applyContext(context);
+    }
+
+    function installKeyShortcuts() {
+        ["Left", "Right", "Up", "Down"].forEach(function (label) {
+            shortcut("Move " + label, function () { moveToward(label.toLowerCase()); });
+        });
+        shortcut("Resize Grow Width", function () { resizeByKey("h", 1); });
+        shortcut("Resize Shrink Width", function () { resizeByKey("h", -1); });
+        shortcut("Resize Grow Height", function () { resizeByKey("v", 1); });
+        shortcut("Resize Shrink Height", function () { resizeByKey("v", -1); });
+        shortcut("Master More", function () { changeMasters(1); });
+        shortcut("Master Fewer", function () { changeMasters(-1); });
+        shortcut("Float All", floatAll);
+        shortcut("Promote", promoteActive);
+    }
+
     function installShortcuts() {
+        installKeyShortcuts();
         shortcut("Toggle Float", toggleFloat);
         ["Left Half", "Right Half", "Top Half", "Bottom Half", "Top Left",
             "Top Right", "Bottom Left", "Bottom Right", "Maximize", "Center Quarter",
