@@ -1,0 +1,13 @@
+{
+    "KPlugin": {
+        "Id": "weave",
+        "Name": "Weave",
+        "Description": "Opt-in window tiling and snapping",
+        "Version": "0.1",
+        "License": "MIT",
+        "EnabledByDefault": false
+    },
+    "KPackageStructure": "KWin/Script",
+    "X-Plasma-API": "javascript",
+    "X-Plasma-MainScript": "code/main.js"
+}

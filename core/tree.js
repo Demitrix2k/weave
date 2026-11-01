@@ -258,6 +258,106 @@ function spiral(list) {
   }
   return build(0);
 }
+function infer(rectsById, area, tolerance) {
+  tolerance = tolerance === undefined ? 2 : Math.max(0, tolerance);
+  const entries = Object.keys(rectsById || {}).map(id => ({
+    id,
+    rect : rectsById[id]
+  }));
+  if (!entries.length || !area)
+    return null;
+  if (entries.some(item => !item.rect || item.rect.width <= 0 ||
+                           item.rect.height <= 0))
+    return null;
+  for (let i = 0; i < entries.length; i++) {
+    for (let j = i + 1; j < entries.length; j++) {
+      const a = entries[i].rect;
+      const b = entries[j].rect;
+      if (a.x < b.x + b.width && b.x < a.x + a.width &&
+          a.y < b.y + b.height && b.y < a.y + a.height)
+        return null;
+    }
+  }
+  const gaps = [];
+  function bounds(items) {
+    const xs = items.map(item => item.rect.x);
+    const ys = items.map(item => item.rect.y);
+    const rights = items.map(item => item.rect.x + item.rect.width);
+    const bottoms = items.map(item => item.rect.y + item.rect.height);
+    return {
+      x : Math.min.apply(null, xs), y : Math.min.apply(null, ys),
+      right : Math.max.apply(null, rights), bottom : Math.max.apply(null, bottoms)
+    };
+  }
+  function close(a, b) { return Math.abs(a - b) <= tolerance; }
+  function build(items) {
+    if (items.length === 1)
+      return leaf([ items[0].id ]);
+    const box = bounds(items);
+    const candidates = [];
+    [ 'h', 'v' ].forEach(dir => {
+      const horizontal = dir === 'h';
+      const axisStart = horizontal ? 'x' : 'y';
+      const axisEnd = horizontal ? 'right' : 'bottom';
+      const crossStart = horizontal ? 'y' : 'x';
+      const crossEnd = horizontal ? 'bottom' : 'right';
+      const cuts = [];
+      items.forEach(item => {
+        cuts.push(item.rect[axisStart], item.rect[axisStart] +
+            (horizontal ? item.rect.width : item.rect.height));
+      });
+      cuts.sort((a, b) => a - b);
+      for (let c = 1; c < cuts.length; c++) {
+        const cut = cuts[c];
+        const first = items.filter(item => item.rect[axisStart] +
+            (horizontal ? item.rect.width : item.rect.height) <= cut);
+        const second = items.filter(item => item.rect[axisStart] >= cut);
+        if (!first.length || !second.length || first.length + second.length !== items.length)
+          continue;
+        const firstBox = bounds(first);
+        const secondBox = bounds(second);
+        if (firstBox[crossStart] !== box[crossStart] ||
+            firstBox[crossEnd] !== box[crossEnd] ||
+            secondBox[crossStart] !== box[crossStart] ||
+            secondBox[crossEnd] !== box[crossEnd])
+          continue;
+        const gap = secondBox[axisStart] - firstBox[axisEnd];
+        if (gap < 0)
+          continue;
+        const size = box[axisEnd] - box[axisStart];
+        const available = size - Math.max(0, gap);
+        if (available <= 0)
+          continue;
+        candidates.push({
+          dir, first, second, gap: Math.max(0, gap),
+          ratio: (firstBox[axisEnd] - firstBox[axisStart]) / available
+        });
+      }
+    });
+    for (let i = 0; i < candidates.length; i++) {
+      const candidate = candidates[i];
+      const a = build(candidate.first);
+      const b = build(candidate.second);
+      if (!a || !b)
+        continue;
+      gaps.push(candidate.gap);
+      return split(candidate.dir, candidate.ratio, a, b);
+    }
+    return null;
+  }
+  const expected = bounds(entries);
+  if (!close(expected.x, area.x) || !close(expected.y, area.y) ||
+      !close(expected.right, area.x + area.width) ||
+      !close(expected.bottom, area.y + area.height))
+    return null;
+  const inferred = build(entries);
+  if (!inferred)
+    return null;
+  const gap = gaps.length ? gaps[0] : 0;
+  if (gaps.some(value => Math.abs(value - gap) > tolerance))
+    return null;
+  return {tree : inferred, gap};
+}
 const api = {
   insert,
   remove,
@@ -270,7 +370,8 @@ const api = {
   masterStack,
   columns,
   monocle,
-  spiral
+  spiral,
+  infer
 };
 return Object.assign({}, api, {tree : api});
 });

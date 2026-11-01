@@ -39,6 +39,25 @@ From the slides (ultrawide edge-parking, a scrapbook of related items, and an ac
 
 Cheap now, expensive to retrofit: record focus history and keep window identity stable across restarts (class + caption pattern, not just id).
 
+## 2b. Field feedback (2026-11-01): float first, and restore on login
+
+After about a week of mainly using Rectangle (floating snap, no tiler):
+
+1. **It works great**, so floating-with-snap is the primary experience, not a fallback. Tiling is the opt-in extra. This matches the adapter's inert default (`manageClasses` empty) and puts v0.1 (float + snap, section 11) first in priority.
+2. **Windows and positions are remembered across login with floating windows, but not with Krohnkite.** Hypothesis **[verify]**: KWin/the apps restore geometry as each window appears, and a tiler that retiles on every `windowAdded` (Krohnkite does) then overwrites the restored positions with its own layout, window by window, before the session has settled. A floating-only setup never touches them.
+
+**Requirements this adds**
+
+| # | Requirement |
+|---|---|
+| R1 | **Do not move windows at startup.** After load, and while windows are still appearing, the script only observes. It acts after a settle period (no `windowAdded` for N seconds, default 3, configurable) and then only *adopts* what is there. |
+| R2 | **Adopt, don't reorganise.** Floating windows stay exactly where the session restore put them. For windows that were tiled, rebuild the tree from their current geometry (windows whose rectangles share edges form splits; a guillotine partition inference) instead of re-running the generator. A window set that does not fit a clean partition stays floating. |
+| R3 | **Persist only what geometry cannot say:** which windows are tiled or arranged, Stage pins, group membership. Window identity is class plus a caption pattern (section 2a), not the id. |
+| R4 | **No automatic retile verb on login.** `Retile` is manual. |
+| R5 | A **login test** is part of phase acceptance: log out and in with a mixed floating/tiled setup and compare geometries before and after. |
+
+**Open question: where to persist (R3).** KWin scripts have no file API. Candidates **[verify]**: a QML `main.qml` using `Qt.labs.settings`/a file-backed store, writing KConfig through `callDBus`, or a small helper outside KWin (a user service the script talks to over D-Bus, which would also fit the shortcut-profile tooling). If none is reliable, R2 alone covers the common case, since geometry survives and the tree can be inferred.
+
 ## 3. Architecture
 
 Three layers, so the interesting logic is testable with plain `node` and doesn't need KWin running.
@@ -344,6 +363,7 @@ Source: `~/.local/share/kwin/scripts/hyprkwin/contents/tools/hyprkwin-shortcuts.
 | 8 | `Meta+Alt+arrows` on tiled window | **Dock to that side of the tree.** Float-and-snap stays on corners/thirds keys, which always float. |
 | 9 | Pseudotiling | **No for v1.** Stage and Arrangements cover the aesthetic need. Revisit later. |
 | 10 | Bindings | See 12a. |
+| 11 | Session restore (2026-11-01) | **Required**, see 2b: observe-then-adopt at startup, never retile on login. Floating + snap is the primary mode. |
 
 ### 12a. Binding suggestions
 

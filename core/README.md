@@ -16,7 +16,9 @@ its private event queue changes when recording or consuming expectations.
 - geometry: rect, inset, contains, centre, splitH, splitV, clampSize,
   equalRects, workRect. Rectangles have x, y, width, height. Splits return [a,b].
 - tree: insert, remove, swap, setRatio, dockToSide, layout, hitTest, edgeAt,
-  masterStack, columns, monocle, spiral.
+  infer, masterStack, columns, monocle, spiral. `infer(rectsById, area,
+  tolerance)` returns `{tree, gap}` for non-overlapping guillotine partitions,
+  where `gap` is the inferred common inner gap, or `null` when inference fails.
 - snap: snapRect(action, workArea, gaps, current), all specified actions.
 - stage: addWindow, removeWindow, promote, cycle, pin, unpin, layout.
   State-changing functions take (state, id), cycle takes (state, direction).

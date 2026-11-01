@@ -34,6 +34,7 @@
         layout: tree.layout,
         hitTest: tree.hitTest,
         edgeAt: tree.edgeAt,
+        infer: tree.infer,
         masterStack: tree.masterStack,
         columns: tree.columns,
         monocle: tree.monocle,
