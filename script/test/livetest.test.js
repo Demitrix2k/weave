@@ -283,7 +283,7 @@ test('S10 constants match the adapter and the config default', () => {
     assert.ok(live.includes('MIN_PANE = 100'));
     assert.ok(adapter.includes('MIN_PANE = 100'));
     assert.ok(adapter.includes('readConfigValue("resizeStep", 76)'));
-    assert.match(xml, /name="resizeStep" type="Int">\s*<default>76<\/default>/);
+    assert.match(xml, /name="resizeStep" type="Int">[\s\S]*?<default>76<\/default>/);
 });
 
 test('S8m reports whether the moved window left its slot; S8b needs it', () => {
@@ -480,8 +480,8 @@ test('the harness runs S11 with defaultMode float, an empty tileClasses and Weav
     const source = fs.readFileSync(path.resolve(__dirname,
         '../livetest/livetest.sh'), 'utf8');
     assert.match(source, /S10h S11a S11b S11c S11d/);
-    assert.match(source, /--key defaultMode float/);
-    assert.match(source, /--key tileClasses ""/);
+    assert.match(source, /cfg_set defaultMode float/);
+    assert.match(source, /cfg_set tileClasses ""/);
     ['check-s11a.js', 'check-s11b.js', 'check-s11c.js', 'check-s11d.js'].forEach(file => {
         assert.ok(source.includes(file), file);
         const code = fs.readFileSync(path.resolve(__dirname, '../livetest/js', file), 'utf8');
@@ -489,8 +489,8 @@ test('the harness runs S11 with defaultMode float, an empty tileClasses and Weav
     });
     assert.ok(source.includes('invoke "Weave Snap Left Half"'));
     assert.ok(source.includes('invoke "Weave Toggle Float"'));
-    assert.match(source, /--key defaultMode --delete/);
-    assert.match(source, /--key tileClasses --delete/);
+    assert.match(source, /HARNESS_KEYS="[^"]*\bdefaultMode\b[^"]*\btileClasses\b/);
+    assert.match(source, /for key in \$HARNESS_KEYS; do cfg_del "\$key"; done/);
 });
 
 test('S11 compares against the first-seen rectangles after rounding them', () => {
@@ -514,4 +514,541 @@ test('S11 compares against the first-seen rectangles after rounding them', () =>
     });
     expected.output = null;
     assert.equal(JSON.parse(lines[0].slice('WEAVE_LIVE '.length)).status, 'PASS');
+});
+
+// S12: floating windows resized like a tiler. The fake workspace has kcalc windows a, b, c.
+const s12Ids = ['{a}', '{b}', '{c}'];
+
+function s12Windows(rects, extra = []) {
+    return s12Ids.map((id, index) => ({
+        resourceClass: expected.resourceClass, internalId: id, desktop: 1,
+        output: {name: 'DP-1'}, frameGeometry: Object.assign({}, rects[index])
+    })).concat(extra);
+}
+
+function runS12(scenario, rects, writes, extra) {
+    const windows = s12Windows(rects, extra);
+    const lines = [];
+    expected.output = line => lines.push(line);
+    vm.runInNewContext(fs.readFileSync(path.resolve(__dirname,
+        '../livetest/js/check-' + scenario.toLowerCase() + '.js'), 'utf8'), {
+        Weave: core, KWin: {PlacementArea: 0}, JSON, Math, String, Object,
+        liveIds: s12Ids, weaveWrites: writes,
+        KCALC_RESOURCE_CLASS: expected.resourceClass,
+        workspace: {screens: [{name: 'DP-1'}], windowList: () => windows,
+            clientArea: () => dpArea}
+    });
+    expected.output = null;
+    return JSON.parse(lines[0].slice('WEAVE_LIVE '.length));
+}
+
+const s12Rects = {
+    start: [[8, 40, 500, 400], [516, 40, 600, 400], [1416, 40, 400, 400]],
+    S12a: [[8, 40, 576, 400], [592, 40, 524, 400], [1416, 40, 400, 400]],
+    S12b: [[8, 40, 500, 400], [516, 40, 600, 400], [1416, 40, 400, 400]],
+    S12c: [[8, 40, 576, 442], [592, 40, 524, 400], [1416, 40, 400, 400]]
+};
+const toRect = array => ({x: array[0], y: array[1], width: array[2], height: array[3]});
+
+test('S12 expectations are the tiler-style resize steps from the side-by-side start', () => {
+    const plan = expected.s12Plan({screens: [{name: 'DP-1'}], clientArea: () => dpArea,
+        windowList: () => s12Windows(s12Rects.start.map(toRect))}, s12Ids, core);
+    const rects = key => s12Ids.map(id => {
+        const rect = plan.states[key][id];
+        return [rect.x, rect.y, rect.width, rect.height];
+    });
+    assert.deepEqual(rects(0), s12Rects.S12a);
+    assert.deepEqual(rects(1), s12Rects.S12b);
+    assert.deepEqual(rects(2), s12Rects.S12c);
+    assert.deepEqual(rects(3)[0], [8, 448, 2544, 976]);
+    assert.deepEqual(plan.writes, [2, 2, 2, 1]);
+    assert.equal(plan.unsafe, false);
+});
+
+test('S12a to S12d pass on the planned rects and fail on a nudge or a write loop', () => {
+    const plan = expected.s12Plan({screens: [{name: 'DP-1'}], clientArea: () => dpArea,
+        windowList: () => s12Windows(s12Rects.start.map(toRect))}, s12Ids, core);
+    ['S12a', 'S12b', 'S12c', 'S12d'].forEach((scenario, index) => {
+        const rects = s12Ids.map(id => plan.states[index][id]);
+        const writes = plan.writes[index];
+        assert.equal(runS12(scenario, rects, writes).status, 'PASS', scenario);
+        assert.equal(runS12(scenario, rects, writes + 1).status, 'FAIL', scenario + ' loop');
+        const nudged = rects.map(rect => Object.assign({}, rect));
+        nudged[1].x += 1;
+        assert.equal(runS12(scenario, nudged, writes).status, 'FAIL', scenario + ' nudge');
+    });
+});
+
+test('S12 is unsafe when a window that is not kcalc would follow the resized edge', () => {
+    const outsider = {resourceClass: 'other', internalId: '{z}', normalWindow: true,
+        output: {name: 'DP-1'}, frameGeometry: {x: 516, y: 40, width: 600, height: 400}};
+    const hidden = Object.assign({}, outsider, {minimized: true});
+    const make = extra => ({screens: [{name: 'DP-1'}], clientArea: () => dpArea,
+        windowList: () => s12Windows(s12Rects.start.map(toRect), [extra])});
+    assert.equal(expected.s12Plan(make(outsider), s12Ids, core).unsafe, true);
+    assert.equal(expected.s12Plan(make(hidden), s12Ids, core).unsafe, false);
+});
+
+test('the harness runs S12 with the Weave resize keys and checks the write counts', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../livetest/livetest.sh'), 'utf8');
+    assert.match(source, /S12a S12b S12c S12d/);
+    ['Resize Grow Width', 'Resize Shrink Width', 'Resize Grow', 'Resize Fill'].forEach(name =>
+        assert.ok(source.includes('invoke "Weave ' + name + '"'), name));
+    ['check-s12a.js', 'place-s12.js'].forEach(file => assert.ok(source.includes(file), file));
+    ['place-s12.js', 'check-s12a.js', 'check-s12b.js', 'check-s12c.js', 'check-s12d.js']
+        .forEach(file => {
+            const code = fs.readFileSync(path.resolve(__dirname, '../livetest/js', file), 'utf8');
+            assert.doesNotMatch(code, /desktops\s*=|\.[\t ]*tile\b|\.(close|kill)\(/);
+        });
+});
+
+test('S12d accepts the left edge and the minimum size when the free area is too small', () => {
+    const blocker = {resourceClass: 'other', internalId: '{z}', normalWindow: true,
+        output: {name: 'DP-1'}, frameGeometry: {x: 0, y: 32, width: 2560, height: 1380}};
+    const world = rects => ({screens: [{name: 'DP-1'}], clientArea: () => dpArea,
+        windowList: () => s12Windows(rects, [blocker])});
+    const start = s12Rects.start.map(toRect);
+    const plan = expected.s12Plan(world(start), s12Ids, core);
+    assert.equal(plan.small, true);
+    assert.deepEqual(plan.states[3]['{a}'], {x: 8, y: 1420, width: 2544, height: 4});
+    const run = (a, writes) => {
+        const windows = s12Windows([a, plan.states[3]['{b}'], plan.states[3]['{c}']], [blocker]);
+        const lines = [];
+        expected.output = line => lines.push(line);
+        vm.runInNewContext(fs.readFileSync(path.resolve(__dirname,
+            '../livetest/js/check-s12d.js'), 'utf8'), {
+            Weave: core, KWin: {PlacementArea: 0}, JSON, Math, String, Object,
+            liveIds: s12Ids, weaveWrites: writes, KCALC_RESOURCE_CLASS: expected.resourceClass,
+            workspace: {screens: [{name: 'DP-1'}], windowList: () => windows,
+                clientArea: () => dpArea}
+        });
+        expected.output = null;
+        return JSON.parse(lines[0].slice('WEAVE_LIVE '.length)).status;
+    };
+    assert.equal(run({x: 8, y: 1390, width: 250, height: 341}, 1), 'PASS');
+    assert.equal(run({x: 9, y: 1390, width: 250, height: 341}, 1), 'FAIL');
+    assert.equal(run({x: 8, y: 1390, width: 250, height: 341}, 2), 'FAIL');
+    assert.equal(run({x: 8, y: 1390, width: 200, height: 341}, 1), 'FAIL');
+});
+
+// ---- live-install safety ------------------------------------------------------------
+
+const harnessPath = path.resolve(__dirname, '../livetest/livetest.sh');
+const harnessSource = () => fs.readFileSync(harnessPath, 'utf8');
+const liveSection = source => source.slice(source.indexOf('# --- live run ---'));
+const stateChanging = /\b(kw_set|kw_del|cfg_set|cfg_del|cfg_enabled_set|cfg_enabled_del|install_pkg|MODIFIED=true)\b|kwriteconfig6|kpackagetool6|unloadScript|reconfigure|Scripting start|invokeShortcut|\binvoke "/;
+
+test('the refusal for a live install precedes every state-changing command', () => {
+    const source = harnessSource();
+    const live = liveSection(source);
+    const refuse = live.indexOf('exit 3');
+    assert.ok(refuse > 0, 'exit 3 exists');
+    assert.ok(live.indexOf('detect_live') < refuse);
+    const first = live.slice(0, refuse).split('\n')
+        .filter(line => !/^\s*(#|say )/.test(line)).join('\n');
+    assert.doesNotMatch(first, stateChanging);
+    assert.match(live, /\[ "\$LIVE_FOUND" = true \] && \[ "\$TAKEOVER" != true \]/);
+    // detection itself is read only
+    const detect = source.slice(source.indexOf('detect_live() {'),
+        source.indexOf('# Copies the live setup'));
+    assert.doesNotMatch(detect, stateChanging);
+    assert.match(detect, /kreadconfig6/);
+    assert.match(detect, /isScriptLoaded/);
+});
+
+test('with --takeover the snapshot happens before the first state change', () => {
+    const live = liveSection(harnessSource());
+    const snapshot = live.indexOf('snapshot_live ||');
+    assert.ok(snapshot > 0);
+    const firstChange = live.search(/\b(MODIFIED=true|install_pkg|cfg_set|cfg_enabled_set)\b|unloadScript/);
+    assert.ok(snapshot < firstChange);
+    assert.match(live, /snapshot_live \|\| \{[^}]*exit 1/);
+    const body = harnessSource();
+    const snap = body.slice(body.indexOf('snapshot_live() {'), body.indexOf('restore_fail()'));
+    ['package', 'script-weave.lines', 'weaveEnabled', 'loaded', 'state.text', 'STATE_ROOT']
+        .forEach(word => assert.ok(snap.includes(word), word));
+    assert.doesNotMatch(snap, stateChanging);
+});
+
+test('the restore code puts back package, keys, weaveEnabled, state and the script', () => {
+    const body = harnessSource();
+    const restore = body.slice(body.indexOf('restore_live() {'),
+        body.indexOf('restore_failure_message() {'));
+    ['kpackagetool6', 'install_pkg "$snap/package"', 'script-weave.lines', 'weaveEnabled',
+        'org.weave.State.Set', 'Scripting start', 'reconfigure', 'diff -r'].forEach(word =>
+        assert.ok(restore.includes(word), word));
+    assert.match(body, /Live install: none found/);
+    assert.match(body, /Live install: restored/);
+    assert.match(body, /RESTORE FAILED/);
+    assert.match(body, /result=4/);
+});
+
+test('the harness changes the Script-weave section only through guarded helpers', () => {
+    const source = harnessSource();
+    const lines = source.split('\n');
+    lines.forEach((line, index) => {
+        if (/^\s*(#|say )/.test(line)) return;
+        if (/kwriteconfig6/.test(line)) {
+            assert.match(line, /^kw_(set|del)\(\) \{ run kwriteconfig6/, 'line ' + (index + 1));
+        }
+    });
+    assert.match(source, /HARNESS_KEYS="manageClasses settleSeconds logLevel defaultMode tileClasses"/);
+    // every cfg_set/cfg_del user passes a literal harness key or iterates over the list
+    (source.match(/\bcfg_(set|del) ([A-Za-z$"]+)/g) || []).forEach(call => {
+        assert.match(call, /cfg_(set|del) (manageClasses|settleSeconds|logLevel|defaultMode|tileClasses|"\$key")/);
+    });
+    assert.match(source, /uninstall_throwaway\(\)[\s\S]*PKG_TOUCHED[\s\S]*ENABLED_TOUCHED/);
+});
+
+test('rm -rf only touches the harness temp and snapshot directories', () => {
+    harnessSource().split('\n').forEach(line => {
+        if (!/rm -rf/.test(line) || /^\s*(#|say )/.test(line)) return;
+        assert.match(line, /rm -rf "\$(TMP_DIR|SNAP_TMP)"/, line);
+    });
+});
+
+test('--takeover and exit code 3 are documented', () => {
+    const readme = fs.readFileSync(path.resolve(__dirname, '../README.md'), 'utf8');
+    ['--takeover', 'exit code 3', 'weave-livetest', 'restore-', 'script-weave.lines',
+        'org.weave.State.Set', 'Live install'].forEach(word =>
+        assert.ok(readme.includes(word), word));
+    assert.match(harnessSource(), /Usage: livetest\.sh \[--dry-run\] \[--json\] \[--takeover\]/);
+});
+
+// ---- behavioural tests against stub executables -------------------------------------
+
+const {spawnSync} = require('node:child_process');
+const os = require('node:os');
+
+const iniLib = `
+const fs = require('fs');
+exports.parse = file => {
+    const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+    const lines = text === '' ? [] : text.replace(/\\n$/, '').split('\\n');
+    const groups = [{name: null, lines: []}];
+    lines.forEach(line => {
+        const m = /^\\[(.*)\\]$/.exec(line);
+        if (m) groups.push({name: m[1], lines: []}); else groups[groups.length - 1].lines.push(line);
+    });
+    return groups;
+};
+exports.write = (file, groups) => {
+    const out = [];
+    groups.forEach(g => { if (g.name !== null) out.push('[' + g.name + ']'); out.push(...g.lines); });
+    fs.writeFileSync(file, out.length ? out.join('\\n') + '\\n' : '');
+};
+exports.keyOf = line => line.slice(0, line.indexOf('='));
+`;
+
+const stubs = {
+    'kreadconfig6': `#!/usr/bin/env node
+const fs = require('fs'); const ini = require('./ini.js'); const a = process.argv.slice(2);
+fs.appendFileSync(process.env.STUB_LOG, 'kreadconfig6 ' + a.join(' ') + '\\n');
+let file, group, key, def = '';
+for (let i = 0; i < a.length; i++) {
+    if (a[i] === '--file') file = a[++i]; else if (a[i] === '--group') group = a[++i];
+    else if (a[i] === '--key') key = a[++i]; else if (a[i] === '--default') def = a[++i];
+}
+const g = ini.parse(file).find(x => x.name === group);
+const line = g && g.lines.find(l => l.indexOf('=') > 0 && ini.keyOf(l) === key);
+process.stdout.write((line === undefined ? def : line.slice(key.length + 1)) + '\\n');
+`,
+    'kwriteconfig6': `#!/usr/bin/env node
+const fs = require('fs'); const ini = require('./ini.js'); const a = process.argv.slice(2);
+fs.appendFileSync(process.env.STUB_LOG, 'kwriteconfig6 ' + a.join(' ') + '\\n');
+let file, group, key, del = false; const rest = [];
+for (let i = 0; i < a.length; i++) {
+    if (a[i] === '--file') file = a[++i]; else if (a[i] === '--group') group = a[++i];
+    else if (a[i] === '--key') key = a[++i]; else if (a[i] === '--delete') del = true;
+    else rest.push(a[i]);
+}
+if (file !== process.env.FAKE_RC) { console.error('stub: refusing foreign file ' + file); process.exit(9); }
+const groups = ini.parse(file);
+let g = groups.find(x => x.name === group);
+if (!g && !del) {
+    const last = groups[groups.length - 1];
+    if (last.lines.length && last.lines[last.lines.length - 1] !== '') last.lines.push('');
+    g = {name: group, lines: []}; groups.push(g);
+}
+if (g) {
+    let tail = 0; while (g.lines.length > tail && g.lines[g.lines.length - 1 - tail] === '') tail++;
+    g.lines = g.lines.slice(0, g.lines.length - tail);
+    g.lines = g.lines.filter(l => !(l.indexOf('=') > 0 && ini.keyOf(l) === key));
+    if (!del) g.lines.push(key + '=' + (rest[0] === undefined ? '' : rest[0]));
+    const body = g.lines.sort((x, y) =>
+        ini.keyOf(x) < ini.keyOf(y) ? -1 : ini.keyOf(x) > ini.keyOf(y) ? 1 : 0);
+    g.lines = body.concat(new Array(tail).fill(''));
+}
+ini.write(file, groups);
+`,
+    'kpackagetool6': `#!/bin/sh
+echo "kpackagetool6 $*" >> "$STUB_LOG"
+case "$1" in --type=*) shift ;; esac
+mode=$1; arg=$2
+if [ -n "\${STUB_FAIL_ON-}" ]; then
+    case "$arg" in *"$STUB_FAIL_ON"*) echo "stub failure" >&2; exit 1 ;; esac
+fi
+case "$mode" in
+    -i) if [ -e "$FAKE_SCRIPTS/weave" ]; then echo "already installed" >&2; exit 1; fi
+        mkdir -p "$FAKE_SCRIPTS"; cp -a "$arg" "$FAKE_SCRIPTS/weave" ;;
+    -u) [ -e "$FAKE_SCRIPTS/weave" ] || exit 1
+        rm -rf "$FAKE_SCRIPTS/weave"; cp -a "$arg" "$FAKE_SCRIPTS/weave" ;;
+    -r) rm -rf "$FAKE_SCRIPTS/weave" ;;
+esac
+`,
+    'qdbus6': `#!/bin/sh
+echo "qdbus6 $*" >> "$STUB_LOG"
+case "$*" in
+    *isScriptLoaded*) cat "$STUB_DIR/loaded" ;;
+    "org.kde.KWin /Scripting unloadScript weave") echo false > "$STUB_DIR/loaded" ;;
+    "org.kde.KWin /Scripting start")
+        if [ -e "$FAKE_SCRIPTS/weave" ] && grep -q '^weaveEnabled=true' "$FAKE_RC"; then
+            echo true > "$STUB_DIR/loaded"
+        fi ;;
+    *" loadScript "*) echo 7 ;;
+    *org.weave.State.Get) cat "$STUB_DIR/state"; echo ;;
+    *org.weave.State.Set*) printf '%s' "$4" > "$STUB_DIR/state" ;;
+esac
+exit 0
+`,
+    'journalctl': `#!/bin/sh
+echo "journalctl $*" >> "$STUB_LOG"
+echo "weave loaded build=$(cat "$STUB_BUILD_ID")"
+`,
+    'kcalc': '#!/bin/sh\necho "kcalc $*" >> "$STUB_LOG"\nexit 0\n',
+    'gdbus': '#!/bin/sh\necho "gdbus $*" >> "$STUB_LOG"\nexit 0\n',
+    'pgrep': '#!/bin/sh\necho "pgrep $*" >> "$STUB_LOG"\nexit 1\n',
+    'sleep': '#!/bin/sh\nexit 0\n'
+};
+
+const originalRc = [
+    '[General]', 'Name=test', '', '[Plugins]', 'krohnkiteEnabled=true', 'weaveEnabled=true', '',
+    '[Script-weave]', 'defaultMode=float', 'focusRatio=0.6', 'gapInner=6', 'gapOuter=8',
+    'logLevel=info', 'manageClasses=*,!org.kde.plasmashell', 'persist=true',
+    'resizeStep=80', 'settleSeconds=2', 'tileClasses=org.kde.konsole', '',
+    '[Script-other]', 'x=1', ''].join('\n');
+const statelessRc = ['[General]', 'Name=test', '', '[Plugins]', 'krohnkiteEnabled=true', ''].join('\n');
+const originalState = '{"records":[{"class":"a","mode":"tiled"}]}';
+
+function makeWorld(options) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'weave-livetest-'));
+    const world = {dir, home: path.join(dir, 'home'), stubs: path.join(dir, 'stubs'),
+        log: path.join(dir, 'calls.log'), rc: path.join(dir, 'home/.config/kwinrc'),
+        scripts: path.join(dir, 'home/.local/share/kwin/scripts'),
+        stubDir: path.join(dir, 'stubdata'), stateHome: path.join(dir, 'home/.local/state')};
+    [world.stubs, world.stubDir, path.dirname(world.rc), world.scripts, world.stateHome]
+        .forEach(d => fs.mkdirSync(d, {recursive: true}));
+    fs.writeFileSync(path.join(world.stubs, 'ini.js'), iniLib);
+    Object.keys(stubs).forEach(name => {
+        fs.writeFileSync(path.join(world.stubs, name), stubs[name], {mode: 0o755});
+    });
+    fs.writeFileSync(world.log, '');
+    fs.writeFileSync(world.rc, options.rc);
+    fs.writeFileSync(path.join(world.stubDir, 'loaded'), options.loaded ? 'true\n' : 'false\n');
+    fs.writeFileSync(path.join(world.stubDir, 'state'), options.state || '');
+    if (options.package) {
+        const pkg = path.join(world.scripts, 'weave');
+        fs.mkdirSync(path.join(pkg, 'contents/code'), {recursive: true});
+        fs.writeFileSync(path.join(pkg, 'metadata.json'), '{"Id":"weave","note":"user copy"}\n');
+        fs.writeFileSync(path.join(pkg, 'contents/code/main.js'), 'var user = "real";\nå\n');
+        fs.writeFileSync(path.join(pkg, 'contents/code/data.bin'), Buffer.from([0, 1, 2, 255]));
+    }
+    return world;
+}
+
+function harness(world, args, extraEnv) {
+    const env = Object.assign({}, process.env, {
+        HOME: world.home, XDG_STATE_HOME: world.stateHome,
+        XDG_CONFIG_HOME: path.join(world.home, '.config'),
+        XDG_RUNTIME_DIR: path.join(world.dir, 'run'),
+        DBUS_SESSION_BUS_ADDRESS: 'unix:path=' + path.join(world.dir, 'no-bus'),
+        PATH: [world.stubs, path.dirname(process.execPath), '/usr/bin', '/bin'].join(':'),
+        STUB_LOG: world.log, STUB_DIR: world.stubDir, FAKE_RC: world.rc,
+        FAKE_SCRIPTS: world.scripts,
+        STUB_BUILD_ID: path.resolve(__dirname, '../dist/BUILD_ID'),
+        WEAVE_LIVETEST_KWINRC: world.rc, WEAVE_LIVETEST_SCRIPTS: world.scripts
+    }, extraEnv || {});
+    const result = spawnSync('sh', [harnessPath].concat(args), {env, encoding: 'utf8',
+        timeout: 120000, cwd: world.dir});
+    return {code: result.status, out: result.stdout + result.stderr,
+        calls: fs.readFileSync(world.log, 'utf8').split('\n').filter(Boolean)};
+}
+
+function snapshotTree(dir) {
+    const out = {};
+    const walk = (current, prefix) => fs.readdirSync(current).sort().forEach(name => {
+        const full = path.join(current, name);
+        const rel = prefix + '/' + name;
+        if (fs.statSync(full).isDirectory()) walk(full, rel);
+        else out[rel] = fs.readFileSync(full).toString('hex');
+    });
+    if (fs.existsSync(dir)) walk(dir, '');
+    return out;
+}
+
+const cleanWorld = world => fs.rmSync(world.dir, {recursive: true, force: true});
+const changing = /^(kwriteconfig6|kpackagetool6) |unloadScript|reconfigure|Scripting start|loadScript|State\.Set|invokeShortcut/;
+
+test('stubs shadow every real tool the harness can call', () => {
+    const world = makeWorld({rc: statelessRc, loaded: false});
+    try {
+        ['kreadconfig6', 'kwriteconfig6', 'kpackagetool6', 'qdbus6', 'journalctl', 'kcalc',
+            'gdbus', 'pgrep', 'sleep'].forEach(name => {
+            const found = spawnSync('sh', ['-c', 'command -v ' + name], {encoding: 'utf8',
+                env: {PATH: [world.stubs, '/usr/bin', '/bin'].join(':')}});
+            assert.equal(found.stdout.trim(), path.join(world.stubs, name), name);
+        });
+    } finally { cleanWorld(world); }
+});
+
+[
+    ['an installed package', {package: true}],
+    ['weaveEnabled in kwinrc', {rc: '[Plugins]\nweaveEnabled=false\n'}],
+    ['a Script-weave key', {rc: '[Script-weave]\ngapInner=6\n'}],
+    ['a loaded script', {loaded: true}],
+    ['everything', {package: true, rc: originalRc, loaded: true, state: originalState}]
+].forEach(([name, extra]) => {
+    test('a live install (' + name + ') without --takeover exits 3 and changes nothing', () => {
+        const world = makeWorld(Object.assign({rc: statelessRc, loaded: false}, extra));
+        try {
+            const rcBefore = fs.readFileSync(world.rc, 'utf8');
+            const treeBefore = snapshotTree(world.scripts);
+            const result = harness(world, []);
+            assert.equal(result.code, 3, result.out);
+            assert.match(result.out, /would replace it/);
+            assert.match(result.out, /--takeover/);
+            assert.equal(result.calls.filter(call => changing.test(call)).length, 0,
+                result.calls.join('\n'));
+            result.calls.forEach(call => assert.match(call, /^(kreadconfig6 |qdbus6 .*isScriptLoaded)/));
+            assert.equal(fs.readFileSync(world.rc, 'utf8'), rcBefore);
+            assert.deepEqual(snapshotTree(world.scripts), treeBefore);
+            assert.equal(fs.existsSync(path.join(world.stateHome, 'weave-livetest')), false);
+        } finally { cleanWorld(world); }
+    });
+});
+
+test('--takeover restores kwinrc, the package, the state and the running script', () => {
+    const world = makeWorld({rc: originalRc, loaded: true, package: true, state: originalState});
+    try {
+        const treeBefore = snapshotTree(path.join(world.scripts, 'weave'));
+        const rcBefore = fs.readFileSync(world.rc);
+        const result = harness(world, ['--takeover']);
+        assert.notEqual(result.code, 0, 'the stubbed run must abort early');
+        assert.match(result.out, /Timed out waiting for three kcalc windows|Timed out/);
+        const log = result.calls;
+        // the throwaway really replaced things during the run
+        assert.ok(log.some(call => /^kpackagetool6 .*-u .*dist/.test(call)), log.join('\n'));
+        assert.ok(log.some(call => /kwriteconfig6 .*--key manageClasses org\.kde\.kcalc/.test(call)));
+        // nothing but the final state is left
+        assert.ok(fs.readFileSync(world.rc).equals(rcBefore), fs.readFileSync(world.rc, 'utf8'));
+        assert.deepEqual(snapshotTree(path.join(world.scripts, 'weave')), treeBefore);
+        assert.equal(fs.readFileSync(path.join(world.stubDir, 'state'), 'utf8'), originalState);
+        assert.equal(fs.readFileSync(path.join(world.stubDir, 'loaded'), 'utf8').trim(), 'true');
+        const lastPackage = log.map((c, i) => /^kpackagetool6/.test(c) ? i : -1)
+            .reduce((a, b) => Math.max(a, b), -1);
+        const start = log.lastIndexOf('qdbus6 org.kde.KWin /Scripting start');
+        assert.ok(start > lastPackage, 'Scripting start comes after the reinstall');
+        assert.ok(log.some(call => call.startsWith('qdbus6 org.weave.State /State org.weave.State.Set ')));
+        assert.match(result.out, /Live install: restored/);
+        // the snapshot copy stays in the state directory, the mktemp copy is gone
+        const root = path.join(world.stateHome, 'weave-livetest');
+        const kept = fs.readdirSync(root);
+        assert.equal(kept.length, 1);
+        assert.match(kept[0], /^restore-/);
+        const files = fs.readdirSync(path.join(root, kept[0])).sort();
+        ['kwinrc.before', 'loaded', 'package', 'script-weave.lines', 'state.text',
+            'weaveEnabled.present', 'weaveEnabled.value'].forEach(name =>
+            assert.ok(files.includes(name), name));
+        assert.deepEqual(snapshotTree(path.join(root, kept[0], 'package')), treeBefore);
+        assert.equal(fs.readFileSync(path.join(root, kept[0], 'kwinrc.before'), 'utf8'), originalRc);
+        // every key the harness wrote or deleted is one of its own
+        log.filter(call => /^kwriteconfig6 .*--group Script-weave/.test(call)).forEach(call => {
+            const key = /--key (\S+)/.exec(call)[1];
+            const saved = /^[a-zA-Z]+$/.test(key);
+            assert.ok(saved, call);
+        });
+        assert.equal(log.some(call => /org\.kde\.KWin \/Scripting unloadScript weave/.test(call)), true);
+    } finally { cleanWorld(world); }
+});
+
+test('--takeover with only Script-weave keys (no package) restores those keys', () => {
+    const world = makeWorld({rc: originalRc.replace('weaveEnabled=true\n', ''), loaded: false});
+    try {
+        const rcBefore = fs.readFileSync(world.rc);
+        const result = harness(world, ['--takeover']);
+        assert.notEqual(result.code, 0);
+        assert.ok(fs.readFileSync(world.rc).equals(rcBefore), fs.readFileSync(world.rc, 'utf8'));
+        assert.equal(fs.existsSync(path.join(world.scripts, 'weave')), false);
+        assert.equal(result.calls.includes('qdbus6 org.kde.KWin /Scripting start'), true,
+            'the throwaway run starts it; the restore does not start an unloaded script again');
+        assert.match(result.out, /Live install: restored/);
+    } finally { cleanWorld(world); }
+});
+
+test('a failed restore is loud, exits non-zero and keeps the snapshot', () => {
+    const world = makeWorld({rc: originalRc, loaded: true, package: true, state: originalState});
+    try {
+        const result = harness(world, ['--takeover'], {STUB_FAIL_ON: '/package'});
+        assert.notEqual(result.code, 0);
+        assert.match(result.out, /RESTORE FAILED/);
+        assert.match(result.out, /NOT FULLY RESTORED/);
+        const root = path.join(world.stateHome, 'weave-livetest');
+        const kept = fs.readdirSync(root);
+        assert.equal(kept.length, 1);
+        assert.ok(result.out.includes(path.join(root, kept[0])), 'names the snapshot path');
+        assert.match(result.out, /Manual restore/);
+        assert.ok(fs.existsSync(path.join(root, kept[0], 'package/metadata.json')));
+    } finally { cleanWorld(world); }
+});
+
+test('without a live install the throwaway is installed, then removed as before', () => {
+    const world = makeWorld({rc: statelessRc, loaded: false});
+    try {
+        const rcBefore = fs.readFileSync(world.rc, 'utf8');
+        const result = harness(world, []);
+        assert.notEqual(result.code, 0);
+        assert.match(result.out, /Live install: none found/);
+        assert.ok(result.calls.some(call => /^kpackagetool6 .*-i .*dist/.test(call)));
+        assert.ok(result.calls.some(call => /^kpackagetool6 .*-r weave/.test(call)));
+        assert.equal(result.calls.some(call => /^kpackagetool6 \S+ -u /.test(call)), false);
+        assert.equal(result.calls.some(call => /org\.weave\.State/.test(call)), false);
+        assert.equal(fs.existsSync(path.join(world.scripts, 'weave')), false);
+        const after = fs.readFileSync(world.rc, 'utf8');
+        assert.doesNotMatch(after, /weaveEnabled=|manageClasses|settleSeconds|logLevel/);
+        assert.match(after, /krohnkiteEnabled=true/);
+        const content = text => text.split('\n').filter(line => line && line !== '[Script-weave]');
+        assert.deepEqual(content(after), content(rcBefore));
+        assert.equal(fs.existsSync(path.join(world.stateHome, 'weave-livetest')), false);
+        result.calls.filter(call => /^kwriteconfig6 /.test(call)).forEach(call => {
+            if (/--group Script-weave/.test(call)) {
+                assert.match(call, /--key (manageClasses|settleSeconds|logLevel|defaultMode|tileClasses)\b/);
+            } else {
+                assert.match(call, /--group Plugins --key weaveEnabled/);
+            }
+        });
+    } finally { cleanWorld(world); }
+});
+
+test('--takeover with nothing to take over behaves like a plain run', () => {
+    const world = makeWorld({rc: statelessRc, loaded: false});
+    try {
+        const result = harness(world, ['--takeover']);
+        assert.match(result.out, /Live install: none found/);
+        assert.equal(fs.existsSync(path.join(world.stateHome, 'weave-livetest')), false);
+    } finally { cleanWorld(world); }
+});
+
+test('--dry-run prints the snapshot and restore plan and runs nothing', () => {
+    const world = makeWorld({rc: originalRc, loaded: true, package: true, state: originalState});
+    try {
+        const rcBefore = fs.readFileSync(world.rc);
+        const result = harness(world, ['--dry-run', '--takeover']);
+        assert.equal(result.code, 0, result.out);
+        assert.match(result.out, /DRY-RUN: --takeover: snapshot/);
+        assert.match(result.out, /org\.weave\.State\.Set <saved>/);
+        assert.match(result.out, /weave-livetest\/restore-<timestamp>/);
+        assert.deepEqual(result.calls, []);
+        assert.ok(fs.readFileSync(world.rc).equals(rcBefore));
+        assert.equal(fs.existsSync(path.join(world.stateHome, 'weave-livetest')), false);
+    } finally { cleanWorld(world); }
 });

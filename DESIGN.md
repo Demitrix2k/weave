@@ -369,7 +369,7 @@ Source: `~/.local/share/kwin/scripts/hyprkwin/contents/tools/hyprkwin-shortcuts.
 
 Keep the modifier scheme (Meta focus, +Shift move, +Ctrl resize, +Alt snap, Ctrl+Meta desktops). Additions, all optional:
 
-- `Meta+Return`: **promote** focused window to the Focus slot / master (the dwm/i3 convention, and the Stage verb).
+- `Meta+Shift+Return`: **promote** focused window to the Focus slot / master (the dwm/i3 convention, and the Stage verb).
 - `Meta+,` and `Meta+.`: cycle which window sits in the Focus slot through the rail order (carousel feel).
 - `Meta+Shift+Space`: float/tile alias of `Meta+F`, because it's the i3/sway/Hyprland habit and costs nothing.
 - Every directional verb accepts arrows **and** `hjkl` (you already do this for focus, move and resize; make it uniform, including Alt-layer halves).

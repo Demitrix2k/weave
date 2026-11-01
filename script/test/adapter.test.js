@@ -182,7 +182,7 @@ test('script is inert by default and every shortcut has an empty default key', (
     const h = harness();
     h.add(makeWindow('a'));
     assert.deepEqual(geometry(h.windows[0]), {x: 0.4, y: 0.2, width: 799.6, height: 600.5});
-    assert.equal(h.shortcuts.size, 44);
+    assert.equal(h.shortcuts.size, 46);
     h.shortcuts.forEach(shortcut => assert.equal(shortcut.key, ''));
 });
 
@@ -1919,39 +1919,38 @@ test('resize: marks the context as edited so an arrival is inserted, not re-deri
     assert.equal(rectOf(late)[0], 999);
 });
 
-test('resize: a floating window grows by the step in total, half per side', () => {
-    const {h, windows} = setup(3);
+test('resize: a lone floating window moves only its free sides', () => {
+    const {h, windows} = setup(2);
     const [a, b] = windows;
     fire(h, 'Toggle Float', b);
+    fire(h, 'Toggle Float', a);
     assert.deepEqual(rectOf(b), [0, 0, 800, 601]);
-    const tiledWrites = a.geometryWrites;
     fire(h, 'Resize Shrink Width', b);
-    assert.deepEqual(rectOf(b), [38, 0, 724, 601]);
+    assert.deepEqual(rectOf(b), [0, 0, 724, 601]);
     fire(h, 'Resize Grow Width', b);
     fire(h, 'Resize Grow Width', b);
     assert.deepEqual(rectOf(b), [0, 0, 876, 601]);
     fire(h, 'Resize Shrink Height', b);
-    assert.deepEqual(rectOf(b), [0, 38, 876, 525]);
+    assert.deepEqual(rectOf(b), [0, 0, 876, 550]);
     fire(h, 'Resize Grow Height', b);
     assert.deepEqual(rectOf(b), [0, 0, 876, 601]);
-    assert.equal(a.geometryWrites, tiledWrites);
 });
 
-test('resize: floating sizes stay inside the work area and at least 150 px', () => {
-    const {h, windows} = setup(2);
-    const b = windows[1];
+test('resize: a floating step that would go below 200x150 is refused', () => {
+    const {h, windows} = setup(1);
+    const b = windows[0];
     fire(h, 'Toggle Float', b);
     for (let index = 0; index < 30; index++) { fire(h, 'Resize Shrink Width', b); }
-    assert.equal(rectOf(b)[2], 150);
+    assert.equal(rectOf(b)[2], 268);
     const frozen = b.geometryWrites;
     fire(h, 'Resize Shrink Width', b);
     assert.equal(b.geometryWrites, frozen);
     for (let index = 0; index < 30; index++) { fire(h, 'Resize Grow Width', b); }
-    assert.deepEqual([rectOf(b)[0], rectOf(b)[2]], [0, 1200]);
+    assert.deepEqual([rectOf(b)[0], rectOf(b)[2]], [0, 1192]);
     for (let index = 0; index < 30; index++) { fire(h, 'Resize Shrink Height', b); }
-    assert.equal(rectOf(b)[3], 150);
+    assert.ok(rectOf(b)[3] >= 150 && rectOf(b)[3] < 201);
     for (let index = 0; index < 30; index++) { fire(h, 'Resize Grow Height', b); }
-    assert.deepEqual([rectOf(b)[1], rectOf(b)[3]], [0, 801]);
+    assert.deepEqual([rectOf(b)[1], rectOf(b)[3]], [0, 793]);
 });
 
 test('resize: a resized floating window returns to that size after a tile and float', () => {
@@ -2539,4 +2538,177 @@ test('drag: moving or resizing a floating window never relayouts and is remember
     fireShortcut(h, 'Toggle Float', free);
     fireShortcut(h, 'Toggle Float', free);
     assert.deepEqual(geometry(free), {x: 700, y: 150, width: 500, height: 350});
+});
+
+test('Snap Third cycles left, centre, right and Snap Two Thirds cycles left, right', () => {
+    const h = harness({manageClasses: 'editor', gapInner: 8, gapOuter: 8});
+    const a = makeWindow('a', {frameGeometry: {x: 300, y: 300, width: 200, height: 200}});
+    h.add(a);
+    const shortcutNames = Array.from(h.shortcuts.keys());
+    assert.ok(!shortcutNames.some(name => /Snap (Left|Center|Right) Third/.test(name)));
+    fireShortcut(h, 'Snap Left Half', a);
+    const widths = [];
+    const xs = [];
+    for (let i = 0; i < 4; i++) {
+        fireShortcut(h, 'Snap Third', a);
+        widths.push(geometry(a).width);
+        xs.push(geometry(a).x);
+    }
+    assert.deepEqual(xs, [8, 405, 803, 8]);
+    assert.deepEqual(widths, [389, 390, 389, 389]);
+    const twoXs = [];
+    for (let i = 0; i < 3; i++) {
+        fireShortcut(h, 'Snap Two Thirds', a);
+        twoXs.push(geometry(a).x);
+        assert.equal(geometry(a).width, 787);
+    }
+    assert.deepEqual(twoXs, [8, 405, 8]);
+});
+
+// ---- floating resize like a tiler, and Fill ----
+
+function floatSetup(boxes, extra) {
+    const h = harness(Object.assign({defaultMode: 'float'}, gappedWith(extra)));
+    const windows = boxes.map((box, index) => {
+        const options = Object.assign({frameGeometry: {x: box[0], y: box[1], width: box[2],
+            height: box[3]}}, box[4] || {});
+        const window = makeWindow('f' + index, options);
+        h.add(window);
+        return window;
+    });
+    return {h, windows};
+}
+
+const leftBox = [8, 8, 500, 400];
+const rightBox = [516, 8, 676, 400];
+
+test('tiler resize: shortcut names for grow, shrink and fill exist with empty keys', () => {
+    const h = harness();
+    ['Resize Grow', 'Resize Shrink', 'Resize Fill'].forEach(name => {
+        assert.equal(h.shortcuts.get('Weave ' + name).key, '', name);
+    });
+});
+
+test('tiler resize: a managed floating neighbour moves with the shared edge', () => {
+    const {h, windows} = floatSetup([leftBox, rightBox]);
+    const [a, b] = windows;
+    fire(h, 'Resize Grow Width', a);
+    assert.deepEqual(rectOf(a), [8, 8, 576, 400]);
+    assert.deepEqual(rectOf(b), [592, 8, 600, 400]);
+    assert.deepEqual([a.geometryWrites, b.geometryWrites], [1, 1]);
+    fire(h, 'Resize Shrink Width', a);
+    assert.deepEqual(rectOf(a), [8, 8, 500, 400]);
+    assert.deepEqual(rectOf(b), [516, 8, 676, 400]);
+    assert.deepEqual([a.geometryWrites, b.geometryWrites], [2, 2]);
+});
+
+test('tiler resize: the neighbour on the left side is resized by the right window', () => {
+    const {h, windows} = floatSetup([leftBox, rightBox]);
+    fire(h, 'Resize Grow Width', windows[1]);
+    assert.deepEqual(rectOf(windows[1]), [440, 8, 752, 400]);
+    assert.deepEqual(rectOf(windows[0]), [8, 8, 424, 400]);
+});
+
+test('tiler resize: an unmanaged window is a neighbour too', () => {
+    const {h, windows} = floatSetup([leftBox, rightBox.concat([{resourceClass: 'other'}])]);
+    fire(h, 'Resize Grow Width', windows[0]);
+    assert.deepEqual(rectOf(windows[1]), [592, 8, 600, 400]);
+});
+
+test('tiler resize: a neighbour keeps its resized size when it floats again later', () => {
+    const {h, windows} = floatSetup([leftBox, rightBox]);
+    fire(h, 'Resize Grow Width', windows[0]);
+    fire(h, 'Toggle Float', windows[1]);
+    fire(h, 'Toggle Float', windows[1]);
+    assert.deepEqual(rectOf(windows[1]), [592, 8, 600, 400]);
+});
+
+test('tiler resize: other outputs, desktops and minimized windows are ignored', () => {
+    const ignored = [{output: 'DP-2'}, {desktops: [3]}, {minimized: true},
+        {desktopWindow: true}];
+    ignored.forEach(extra => {
+        const {h, windows} = floatSetup([leftBox, rightBox.concat([{}])]);
+        Object.assign(windows[1], extra);
+        fire(h, 'Resize Grow Width', windows[0]);
+        assert.deepEqual(rectOf(windows[0]), [8, 8, 576, 400], JSON.stringify(extra));
+        assert.equal(windows[1].geometryWrites, 0, JSON.stringify(extra));
+    });
+});
+
+test('tiler resize: a window on all desktops counts as a neighbour', () => {
+    const {h, windows} = floatSetup([leftBox, rightBox]);
+    Object.assign(windows[1], {desktops: [3], onAllDesktops: true});
+    fire(h, 'Resize Grow Width', windows[0]);
+    assert.deepEqual(rectOf(windows[1]), [592, 8, 600, 400]);
+});
+
+test('tiler resize: a tiled neighbour is never moved and blocks the shared edge', () => {
+    const {h, windows} = setup(3);
+    const [a, b, c] = windows;
+    fire(h, 'Toggle Float', b);
+    b.frameGeometry = {x: 722, y: 8, width: 470, height: 389};
+    assert.deepEqual([rectOf(a), rectOf(c)], [[8, 8, 706, 785], [722, 8, 470, 785]]);
+    const writes = totalWrites(windows);
+    fire(h, 'Resize Grow Width', b);
+    assert.deepEqual(rectOf(b), [722, 8, 470, 389]);
+    assert.equal(totalWrites(windows), writes);
+});
+
+test('tiler resize: two neighbours on one side both follow', () => {
+    const {h, windows} = floatSetup([[8, 8, 500, 400], [516, 8, 676, 200],
+        [516, 216, 676, 192]]);
+    fire(h, 'Resize Grow Width', windows[0]);
+    assert.deepEqual(rectOf(windows[1]), [592, 8, 600, 200]);
+    assert.deepEqual(rectOf(windows[2]), [592, 216, 600, 192]);
+});
+
+test('tiler resize: grow and shrink change both dimensions', () => {
+    const {h, windows} = floatSetup([[100, 100, 400, 300]]);
+    fire(h, 'Resize Grow', windows[0]);
+    assert.deepEqual(rectOf(windows[0]), [24, 49, 552, 401]);
+    fire(h, 'Resize Shrink', windows[0]);
+    assert.deepEqual(rectOf(windows[0]), [100, 100, 400, 300]);
+    assert.equal(windows[0].geometryWrites, 2);
+});
+
+test('tiler resize: grow and shrink on a tiled window use the tree resize on both axes', () => {
+    const {h, windows} = setup(3);
+    fire(h, 'Resize Grow', windows[1]);
+    const grown = rectOf(windows[1]);
+    fire(h, 'Resize Grow Width', windows[2]);
+    const {h: h2, windows: w2} = setup(3);
+    fire(h2, 'Resize Grow Width', w2[1]);
+    fire(h2, 'Resize Grow Height', w2[1]);
+    assert.deepEqual(grown, rectOf(w2[1]));
+    assert.notDeepEqual(rectsOf(windows), rectsOf(w2));
+});
+
+test('fill: takes the largest free area between the other windows', () => {
+    const {h, windows} = floatSetup([[8, 8, 400, 785], [800, 8, 392, 785], [500, 300, 100, 100]]);
+    fire(h, 'Resize Fill', windows[2]);
+    assert.deepEqual(rectOf(windows[2]), [416, 8, 376, 785]);
+    assert.equal(windows[2].geometryWrites, 1);
+    fire(h, 'Resize Fill', windows[2]);
+    assert.equal(windows[2].geometryWrites, 1);
+});
+
+test('fill: an alone window fills the work area inside the outer gap', () => {
+    const {h, windows} = floatSetup([[300, 300, 100, 100]]);
+    fire(h, 'Resize Fill', windows[0]);
+    assert.deepEqual(rectOf(windows[0]), [8, 8, 1184, 785]);
+});
+
+test('fill: tiled windows are obstacles and a tiled window ignores Fill', () => {
+    const {h, windows} = setup(3);
+    const [a, b, c] = windows;
+    const writes = totalWrites(windows);
+    fire(h, 'Resize Fill', a);
+    assert.equal(totalWrites(windows), writes);
+    fire(h, 'Toggle Float', b);
+    b.frameGeometry = {x: 722, y: 8, width: 470, height: 389};
+    const afterFloat = totalWrites(windows);
+    fire(h, 'Resize Fill', b);
+    assert.equal(totalWrites(windows), afterFloat);
+    assert.deepEqual([rectOf(a), rectOf(b), rectOf(c)],
+        [[8, 8, 706, 785], [722, 8, 470, 389], [722, 8, 470, 785]]);
 });

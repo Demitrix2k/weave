@@ -4,63 +4,76 @@
       xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0
       http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
   <kcfgfile name=""/>
-  <group name="General">
+  <group name="">
     <entry name="manageClasses" type="String">
+      <label>Manage window classes</label>
       <default></default>
     </entry>
-    <entry name="defaultMode" type="String">
-      <choices>
-        <choice name="tiled"/>
-        <choice name="float"/>
-      </choices>
-      <default>tiled</default>
+    <entry name="defaultMode" type="Int">
+      <label>Default mode</label>
+      <default>0</default>
+      <min>0</min>
+      <max>1</max>
     </entry>
     <entry name="tileClasses" type="String">
+      <label>Window classes to tile</label>
       <default></default>
     </entry>
     <entry name="gapInner" type="Int">
+      <label>Inner gap</label>
       <default>8</default>
+      <min>0</min>
+      <max>400</max>
     </entry>
     <entry name="gapOuter" type="Int">
+      <label>Outer gap</label>
       <default>8</default>
+      <min>0</min>
+      <max>400</max>
     </entry>
     <entry name="settleSeconds" type="Int">
+      <label>Startup settle time</label>
       <default>3</default>
+      <min>0</min>
+      <max>60</max>
     </entry>
     <entry name="dropNativeTiles" type="Bool">
+      <label>Drop KWin native tiles when managing a window</label>
       <default>true</default>
     </entry>
     <entry name="persist" type="Bool">
+      <label>Remember window modes and layouts</label>
       <default>true</default>
     </entry>
     <entry name="masterRatio" type="Double">
+      <label>Master area ratio</label>
       <default>0.6</default>
+      <min>0.0</min>
+      <max>1.0</max>
     </entry>
     <entry name="focusRatio" type="Double">
+      <label>Stage focus ratio</label>
       <default>0.6</default>
+      <min>0.3</min>
+      <max>0.8</max>
     </entry>
     <entry name="resizeStep" type="Int">
+      <label>Resize step</label>
       <default>76</default>
       <min>8</min>
       <max>400</max>
     </entry>
-    <entry name="defaultLayout" type="String">
-      <choices>
-        <choice name="master"/>
-        <choice name="columns"/>
-        <choice name="monocle"/>
-        <choice name="spiral"/>
-        <choice name="stage"/>
-      </choices>
-      <default>master</default>
+    <entry name="defaultLayout" type="Int">
+      <label>Default layout</label>
+      <default>0</default>
+      <min>0</min>
+      <max>4</max>
     </entry>
-    <entry name="logLevel" type="String">
-      <choices>
-        <choice name="off"/>
-        <choice name="info"/>
-        <choice name="debug"/>
-      </choices>
-      <default>off</default>
+    <entry name="logLevel" type="Int">
+      <label>Log level</label>
+      <default>0</default>
+      <min>0</min>
+      <max>2</max>
     </entry>
   </group>
 </kcfg>

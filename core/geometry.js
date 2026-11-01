@@ -173,9 +173,183 @@
             : rect(rectangle.x, placed, rectangle.width, next);
     }
 
+    // ---- keyboard resize like a tiler, and Fill (ported from the kwin-rectangle fork) ----
+
+    const TILER_SLACK = 4;
+    const TILER_NEAR = 12;
+    const TILER_MIN = {w: 200, h: 150};
+
+    function gapAt(side, from, other) {
+        const gaps = {
+            right: other.x - (from.x + from.width),
+            left: from.x - (other.x + other.width),
+            bottom: other.y - (from.y + from.height),
+            top: from.y - (other.y + other.height)
+        };
+        return gaps[side];
+    }
+
+    function spansSide(side, from, other) {
+        if (side === 'left' || side === 'right') {
+            return other.y < from.y + from.height && other.y + other.height > from.y;
+        }
+        return other.x < from.x + from.width && other.x + other.width > from.x;
+    }
+
+    // Free distance between a window side and the work area edge (outer gap kept).
+    function roomAt(side, from, area, outer) {
+        const rooms = {
+            right: area.x + area.width - outer - (from.x + from.width),
+            left: from.x - (area.x + outer),
+            bottom: area.y + area.height - outer - (from.y + from.height),
+            top: from.y - (area.y + outer)
+        };
+        return rooms[side];
+    }
+
+    // Outward movement of one side (positive grows the window) and the other windows whose
+    // facing edge moves with it. Entries of others: {id, rect, movable}. A side that touches
+    // a window which must not move (tiled, arranged) stays put when growing.
+    function sideMove(side, from, others, area, gaps, step, grow) {
+        const horizontal = side === 'left' || side === 'right';
+        const min = horizontal ? TILER_MIN.w : TILER_MIN.h;
+        const sizeOf = rectangle => (horizontal ? rectangle.width : rectangle.height);
+        const near = gaps.inner + TILER_NEAR;
+        const spanning = others.filter(item => spansSide(side, from, item.rect));
+        const gapOf = item => gapAt(side, from, item.rect);
+        const touching = spanning.filter(item =>
+            gapOf(item) >= -TILER_SLACK && gapOf(item) <= near);
+        const blocked = touching.some(item => !item.movable);
+        const follow = blocked ? [] : touching;
+        const room = roomAt(side, from, area, gaps.outer);
+        let move = -step;
+        if (touching.length && grow) {
+            move = blocked ? 0 : Math.min(step, ...touching.map(item => sizeOf(item.rect) - min));
+        } else if (!touching.length && room <= TILER_SLACK) {
+            move = 0;
+        } else if (!touching.length && grow) {
+            const free = spanning.map(gapOf).filter(gap => gap > near).map(gap => gap - gaps.inner);
+            move = Math.min(step, room, ...free);
+        }
+        if (grow && move < 0) { move = 0; }
+        return {move, follow: follow.map(item => item.id)};
+    }
+
+    function followRect(side, other, move) {
+        if (side === 'right') {
+            return rect(other.x + move, other.y, other.width - move, other.height);
+        }
+        if (side === 'left') {
+            return rect(other.x, other.y, other.width - move, other.height);
+        }
+        if (side === 'bottom') {
+            return rect(other.x, other.y + move, other.width, other.height - move);
+        }
+        return rect(other.x, other.y, other.width, other.height - move);
+    }
+
+    // Tiler-style resize of a floating window by |delta| px on the long axis of the work area
+    // (the other axis scaled by the aspect ratio); delta > 0 grows, < 0 shrinks. axis: 'h',
+    // 'v' or 'both'. A side facing a neighbour moves the shared edge and the neighbour with
+    // it, a side facing free space moves on its own up to the next window or the work area
+    // edge (outer gap kept), a side on the work area edge stays put. Returns the new
+    // rectangle and the moved neighbours as {id, rect}.
+    function resizeNeighbours(rectangle, others, area, gaps, axis, delta) {
+        const long = Math.max(area.width, area.height);
+        const steps = {
+            h: Math.abs(delta) * area.width / long,
+            v: Math.abs(delta) * area.height / long
+        };
+        const grow = delta > 0;
+        const sides = {left: 'h', right: 'h', top: 'v', bottom: 'v'};
+        const moves = {left: 0, right: 0, top: 0, bottom: 0};
+        const follows = {};
+        Object.keys(sides).forEach(side => {
+            follows[side] = [];
+            if (axis !== 'both' && axis !== sides[side]) { return; }
+            const result = sideMove(side, rectangle, others, area, gaps, steps[sides[side]], grow);
+            moves[side] = result.move;
+            follows[side] = result.follow;
+        });
+        if (!grow) {
+            // a window pinned on both sides of an axis shrinks from both sides
+            if (axis !== 'v' && moves.left === 0 && moves.right === 0) {
+                moves.left = moves.right = -steps.h;
+            }
+            if (axis !== 'h' && moves.top === 0 && moves.bottom === 0) {
+                moves.top = moves.bottom = -steps.v;
+            }
+        }
+        if (rectangle.width + moves.left + moves.right < TILER_MIN.w) {
+            moves.left = moves.right = 0;
+        }
+        if (rectangle.height + moves.top + moves.bottom < TILER_MIN.h) {
+            moves.top = moves.bottom = 0;
+        }
+        const moved = [];
+        Object.keys(sides).forEach(side => {
+            follows[side].forEach(id => {
+                const item = others.find(other => other.id === id);
+                moved.push({id, rect: followRect(side, item.rect, moves[side])});
+            });
+        });
+        const next = rect(rectangle.x - moves.left, rectangle.y - moves.top,
+            rectangle.width + moves.left + moves.right,
+            rectangle.height + moves.top + moves.bottom);
+        return {rect: next, moves: moved};
+    }
+
+    function sortedUnique(values, low, high) {
+        const inside = values.filter(value => value >= low && value <= high);
+        return Array.from(new Set(inside)).sort((a, b) => a - b);
+    }
+
+    function hitsBox(boxes, x1, y1, x2, y2) {
+        return boxes.some(box => box.x1 < x2 && box.x2 > x1 && box.y1 < y2 && box.y2 > y1);
+    }
+
+    // Largest rectangle inside the work area (outer gap kept) that overlaps none of the
+    // rectangles (inner gap kept around them), or null. Candidate edges lie on the work area
+    // or on an obstacle edge; the first of equal areas in x then y order wins.
+    function fillRect(obstacles, area, gaps) {
+        const left = area.x + gaps.outer;
+        const top = area.y + gaps.outer;
+        const right = area.x + area.width - gaps.outer;
+        const bottom = area.y + area.height - gaps.outer;
+        const boxes = obstacles.map(item => ({
+            x1: item.x - gaps.inner,
+            y1: item.y - gaps.inner,
+            x2: item.x + item.width + gaps.inner,
+            y2: item.y + item.height + gaps.inner
+        })).filter(box => box.x2 > left && box.x1 < right && box.y2 > top && box.y1 < bottom);
+        const xs = sortedUnique([left, right].concat(...boxes.map(b => [b.x1, b.x2])),
+            left, right);
+        const ys = sortedUnique([top, bottom].concat(...boxes.map(b => [b.y1, b.y2])),
+            top, bottom);
+        let best = null;
+        let bestArea = 0;
+        for (let i = 0; i < xs.length; i++) {
+            for (let j = i + 1; j < xs.length; j++) {
+                for (let k = 0; k < ys.length; k++) {
+                    for (let l = k + 1; l < ys.length; l++) {
+                        const size = (xs[j] - xs[i]) * (ys[l] - ys[k]);
+                        if (size <= bestArea || hitsBox(boxes, xs[i], ys[k], xs[j], ys[l])) {
+                            continue;
+                        }
+                        bestArea = size;
+                        best = rect(xs[i], ys[k], xs[j] - xs[i], ys[l] - ys[k]);
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
     const api = {
         neighbour,
         resizeFloat,
+        resizeNeighbours,
+        fillRect,
         rect,
         inset,
         contains,

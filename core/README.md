@@ -75,7 +75,10 @@ its private event queue changes when recording or consuming expectations.
   unconstrained layout because their specified signatures have no minSizes.
 - Centred quarter means half width and half height (quarter area). Thirds share
   rounded boundaries; two-thirds include the gap between their constituent thirds.
-  current is reserved for future relative snap actions.
+  The actions `third` (left, centre, right, back to left) and `twoThirds` (left, right)
+  use `current` to pick the next slot; any other current rectangle gives the left slot.
+  The explicit `leftThird`, `centerThird`, `rightThird`, `leftTwoThirds` and
+  `rightTwoThirds` stay available as pure actions.
 - Stage reserves six cells per side for stable geometry across 0–12 windows,
   including empty cells. Cell indices rank distance from the vertical centre;
   index zero is just above centre, one just below, then outward. Allocation tries
@@ -109,6 +112,11 @@ its private event queue changes when recording or consuming expectations.
   and both edges lie further that way (nearest centre wins, first key on a tie), or `null`.
 - `geometry.resizeFloat(rect, area, 'h'|'v', delta, minSize)`: floating resize, half per side,
   clamped inside the area and to `minSize`.
+- `geometry.resizeNeighbours(rect, others, area, gaps, 'h'|'v'|'both', delta)`: tiler-style
+  floating resize (kwin-rectangle fork rules). `others` are `{id, rect, movable}`; returns
+  `{rect, moves: [{id, rect}]}` with the neighbours that follow a shared edge. Windows with
+  `movable: false` block their side. `geometry.fillRect(rects, area, gaps)`: largest free
+  rectangle or `null`.
 - `tree.resizeBy(t, area, gaps, id, 'h'|'v', delta, minPane)`: moves the nearest ancestor split
   on the axis so the window grows by `delta` px (negative shrinks); `null` without such a split.
 - `tree.clampMasterCount(count, delta, windows)` (1 to windows - 1, never below 1); the master

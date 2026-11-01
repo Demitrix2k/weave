@@ -23,7 +23,6 @@
     var MIN_PANE = 100;
     var FOCUS_RATIO_MIN = 0.3;
     var FOCUS_RATIO_MAX = 0.8;
-    var FLOAT_MIN = 150;
     var RESIZE_STEP_MIN = 8;
     var RESIZE_STEP_MAX = 400;
     var STAGE_GRADIENT = 0.5;
@@ -142,11 +141,20 @@
         }).filter(function (value) { return value.length > 0; });
     }
 
+    function choiceValue(value, choices, fallback) {
+        var text = String(value).trim();
+        if (/^\d+$/.test(text)) {
+            return choices[Number(text)] || fallback;
+        }
+        return choices.indexOf(text) >= 0 ? text : fallback;
+    }
+
     function loadConfig() {
         config = {
             manageClasses: parseList(readConfigValue("manageClasses", "")),
             tileClasses: parseList(readConfigValue("tileClasses", "")),
-            defaultMode: String(readConfigValue("defaultMode", "tiled")).trim(),
+            defaultMode: choiceValue(readConfigValue("defaultMode", "tiled"),
+                ["tiled", "float"], "tiled"),
             gapInner: Math.max(0, Number(readConfigValue("gapInner", 8)) || 0),
             gapOuter: Math.max(0, Number(readConfigValue("gapOuter", 8)) || 0),
             settleSeconds: Math.max(0, Math.floor(Number(
@@ -156,8 +164,10 @@
             masterRatio: Number(readConfigValue("masterRatio", 0.6)),
             focusRatio: Number(readConfigValue("focusRatio", 0.6)),
             resizeStep: Number(readConfigValue("resizeStep", 76)),
-            defaultLayout: String(readConfigValue("defaultLayout", "master")),
-            logLevel: String(readConfigValue("logLevel", "off"))
+            defaultLayout: choiceValue(readConfigValue("defaultLayout", "master"),
+                ["master", "columns", "monocle", "spiral", "stage"], "master"),
+            logLevel: choiceValue(readConfigValue("logLevel", "off"),
+                ["off", "info", "debug"], "off")
         };
         if (config.masterRatio < 0 || config.masterRatio > 1) { config.masterRatio = 0.6; }
         config.focusRatio = clampFocusRatio(config.focusRatio, 0.6);
@@ -965,10 +975,11 @@
     function snap(action) {
         var state = activeState();
         if (!state) { return; }
+        var current = roundedRect(property(state.window, "frameGeometry"));
         if (state.mode === "arranged") { detachFromGroup(state); }
         if (state.mode === "tiled") { floating(state); }
         var area = workArea(state.context);
-        var rect = api.snapRect(action, area, contextGaps(state.context));
+        var rect = api.snapRect(action, area, contextGaps(state.context), current);
         state.floatGeometry = rect;
         state.floatWorkArea = area;
         setGeometry(state.window, rect);
@@ -1008,14 +1019,72 @@
         applyContext(context);
     }
 
-    function resizeFloating(state, axis, delta) {
-        var area = workArea(state.context);
-        var current = roundedRect(property(state.window, "frameGeometry"));
-        var next = api.resizeFloat(current, area, axis, delta, FLOAT_MIN);
+    function onDesktop(window, desktop) {
+        if (property(window, "onAllDesktops") === true) { return true; }
+        var list = property(window, "desktops");
+        return !list || list.length === 0 || list.indexOf(desktop) >= 0;
+    }
+
+    function visibleOn(window, context) {
+        return property(window, "normalWindow") === true &&
+            !property(window, "minimized") && !property(window, "desktopWindow") &&
+            outputName(property(window, "output")) === context.outputName &&
+            onDesktop(window, context.desktop);
+    }
+
+    // The other windows on the state's output and desktop. Only unmanaged and floating
+    // windows follow a shared edge; tiled, arranged and Stage windows are fixed obstacles.
+    function otherWindows(state) {
+        var items = [];
+        workspace.windowList().forEach(function (window, index) {
+            if (window === state.window || !visibleOn(window, state.context)) { return; }
+            var id = windowId(window);
+            var other = id === null ? null : states.get(id);
+            items.push({
+                id: id === null ? "window-" + index : id,
+                window: window,
+                rect: roundedRect(property(window, "frameGeometry")),
+                movable: !other || other.mode === "float"
+            });
+        });
+        return items;
+    }
+
+    function moveOther(item, geometry) {
+        if (api.geometry.equalRects(item.rect, geometry)) { return; }
+        setGeometry(item.window, geometry);
+        var other = states.get(item.id);
+        if (!other) { return; }
+        other.floatGeometry = roundedRect(geometry);
+        other.floatWorkArea = workArea(other.context);
+    }
+
+    function placeFloat(state, current, next, area) {
         state.floatGeometry = next;
         state.floatWorkArea = area;
         if (!api.geometry.equalRects(current, next)) { setGeometry(state.window, next); }
         scheduleSave();
+    }
+
+    // axis: "h", "v" or "both"; shared edges move the neighbours too (see resizeNeighbours)
+    function resizeFloating(state, axis, delta) {
+        var area = workArea(state.context);
+        var current = roundedRect(property(state.window, "frameGeometry"));
+        var items = otherWindows(state);
+        var result = api.resizeNeighbours(current, items, area, contextGaps(state.context),
+            axis, delta);
+        result.moves.forEach(function (move) {
+            moveOther(items.filter(function (item) { return item.id === move.id; })[0], move.rect);
+        });
+        placeFloat(state, current, result.rect, area);
+    }
+
+    function fillFloating(state) {
+        var area = workArea(state.context);
+        var current = roundedRect(property(state.window, "frameGeometry"));
+        var next = api.fillRect(otherWindows(state).map(function (item) { return item.rect; }),
+            area, contextGaps(state.context));
+        if (next) { placeFloat(state, current, next, area); }
     }
 
     // Only the focus window's width means anything in Stage: it changes the focus ratio.
@@ -1029,16 +1098,8 @@
         applyContext(context);
     }
 
-    function resizeByKey(axis, sign) {
-        var state = activeState();
-        if (!state || state.mode === "arranged") { return; }
-        var delta = sign * config.resizeStep;
-        if (state.mode === "float") {
-            resizeFloating(state, axis, delta);
-            return;
-        }
+    function resizeTiled(state, axis, delta) {
         var context = state.context;
-        if (context.groups.length) { return; }
         if (stageLayout(context)) {
             resizeStageFocus(state, axis, delta);
             return;
@@ -1049,6 +1110,24 @@
         context.tree = next;
         context.adopted = true;
         applyContext(context);
+    }
+
+    function resizeByKey(axis, sign) {
+        var state = activeState();
+        if (!state || state.mode === "arranged") { return; }
+        var delta = sign * config.resizeStep;
+        if (state.mode === "float") {
+            resizeFloating(state, axis, delta);
+            return;
+        }
+        if (state.context.groups.length) { return; }
+        var axes = axis === "both" ? ["h", "v"] : [axis];
+        axes.forEach(function (name) { resizeTiled(state, name, delta); });
+    }
+
+    function fillByKey() {
+        var state = activeState();
+        if (state && state.mode === "float") { fillFloating(state); }
     }
 
     function changeMasters(delta) {
@@ -1135,6 +1214,9 @@
         ["Left", "Right", "Up", "Down"].forEach(function (label) {
             shortcut("Move " + label, function () { moveToward(label.toLowerCase()); });
         });
+        shortcut("Resize Grow", function () { resizeByKey("both", 1); });
+        shortcut("Resize Shrink", function () { resizeByKey("both", -1); });
+        shortcut("Resize Fill", fillByKey);
         shortcut("Resize Grow Width", function () { resizeByKey("h", 1); });
         shortcut("Resize Shrink Width", function () { resizeByKey("h", -1); });
         shortcut("Resize Grow Height", function () { resizeByKey("v", 1); });
@@ -1150,7 +1232,7 @@
         shortcut("Toggle Float", toggleFloat);
         ["Left Half", "Right Half", "Top Half", "Bottom Half", "Top Left",
             "Top Right", "Bottom Left", "Bottom Right", "Maximize", "Center Quarter",
-            "Left Third", "Center Third", "Right Third"].forEach(function (label) {
+            "Third", "Two Thirds"].forEach(function (label) {
             var action = label.replace(/ /g, "").replace(/^./, function (c) {
                 return c.toLowerCase();
             });
@@ -1468,6 +1550,10 @@
                 removeWindow(state.window);
             }
         });
+        contexts.forEach(function (context) {
+            context.innerGap = null;
+            applyContext(context);
+        });
         if (typeof workspace.windowList === "function") {
             workspace.windowList().forEach(function (window) {
                 if (observing) { recordCandidate(window, false); }
@@ -1519,7 +1605,11 @@
         connect(property(host, "qApp"), "aboutToQuit", aboutToQuit);
         connect(workspace, "screensChanged", outputsChanged);
         connect(workspace, "outputsChanged", outputsChanged);
-        if (property(workspace, "configChanged") !== undefined) {
+        var optionSettings = property(host, "options");
+        if (optionSettings && property(optionSettings, "configChanged") !== undefined) {
+            connect(optionSettings, "configChanged", refreshConfig);
+        } else if (property(workspace, "configChanged") !== undefined) {
+            // Keep the test adapter and older KWin wrappers working.
             connect(workspace, "configChanged", refreshConfig);
         }
         if (typeof workspace.windowList === "function") {

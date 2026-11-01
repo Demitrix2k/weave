@@ -31,6 +31,7 @@ fi
 rm -rf "$dist"
 mkdir -p "$dist/contents/code"
 cp -r "$root/script/contents/config" "$dist/contents/config"
+cp -r "$root/script/contents/ui" "$dist/contents/ui"
 sed "s/@@BUILD_ID@@/$hash/" "$tmp" > "$dist/contents/code/main.js"
 cp "$root/script/metadata.json" "$dist/metadata.json"
 printf '%s\n' "$hash" > "$dist/BUILD_ID"

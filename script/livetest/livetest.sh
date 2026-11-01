@@ -1,20 +1,47 @@
 #!/bin/sh
 # Uses the same core geometry, tree, and snap code as build.sh for expectations.
 # Only kcalc windows are selected, moved, or terminated by this harness.
+#
+# Usage: livetest.sh [--dry-run] [--json] [--takeover]
+# A live Weave setup (installed package, weaveEnabled, [Script-weave] keys or a loaded
+# script) is never touched without --takeover: the harness then exits 3 before it changes
+# anything. With --takeover it snapshots that setup first and restores it at the end.
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-CONFIG=${HOME}/.config/kwinrc
-SCRIPTS=${HOME}/.local/share/kwin/scripts
+# The two overrides exist for the stub-based tests; the defaults are the real paths.
+CONFIG=${WEAVE_LIVETEST_KWINRC:-${HOME}/.config/kwinrc}
+SCRIPTS=${WEAVE_LIVETEST_SCRIPTS:-${HOME}/.local/share/kwin/scripts}
+STATE_ROOT=${XDG_STATE_HOME:-${HOME}/.local/state}/weave-livetest
+STATE_FILE=${XDG_STATE_HOME:-${HOME}/.local/state}/weave/state.json
 JS_DIR=$ROOT/script/livetest/js
 DRY_RUN=false
 JSON=false
-case "${1-}" in
-    --dry-run) DRY_RUN=true ;;
-    --json) JSON=true ;;
-    '') ;;
-    *) printf 'Usage: %s [--dry-run|--json]\n' "$0"; exit 2 ;;
-esac
+TAKEOVER=false
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=true ;;
+        --json) JSON=true ;;
+        --takeover) TAKEOVER=true ;;
+        *) printf 'Usage: %s [--dry-run] [--json] [--takeover]\n' "$0"; exit 2 ;;
+    esac
+done
+
+# The only [Script-weave] keys this harness ever writes or deletes (without --takeover
+# the section is empty at the start, so they are its own; with --takeover the whole
+# section is saved first).
+HARNESS_KEYS="manageClasses settleSeconds logLevel defaultMode tileClasses"
+MODIFIED=false
+PKG_TOUCHED=false
+ENABLED_TOUCHED=false
+KEYS_TOUCHED=false
+LIVE_FOUND=false
+LIVE_LOADED=false
+LIVE_REPORT=
+SNAP_TMP=
+SNAP_KEEP=
+RESTORE_FAILED=false
+RESTORE_NOTES=
 
 say() { printf '%s\n' "$*"; }
 run() {
@@ -26,6 +53,196 @@ run() {
     [ -z "$output" ] || say "$output"
 }
 
+# Every kwriteconfig6 call of the harness goes through kw_set or kw_del.
+kw_set() { run kwriteconfig6 --file "$CONFIG" --group "$1" --key "$2" "$3"; }
+kw_del() { run kwriteconfig6 --file "$CONFIG" --group "$1" --key "$2" --delete; }
+harness_key() {
+    for known in $HARNESS_KEYS; do [ "$known" = "$1" ] && return 0; done
+    say "BUG: the harness may not touch the Script-weave key $1"
+    return 1
+}
+cfg_set() { harness_key "$1" || return 1; KEYS_TOUCHED=true; kw_set Script-weave "$1" "$2"; }
+cfg_del() { harness_key "$1" || return 1; kw_del Script-weave "$1"; }
+cfg_enabled_set() { ENABLED_TOUCHED=true; kw_set Plugins weaveEnabled "$1"; }
+cfg_enabled_del() { kw_del Plugins weaveEnabled; }
+
+# Package installs: -u when a package is already there (only possible with --takeover).
+install_pkg() {
+    PKG_TOUCHED=true
+    if [ -e "$SCRIPTS/weave" ]; then
+        run kpackagetool6 --type=KWin/Script -u "$1"
+    else
+        run kpackagetool6 --type=KWin/Script -i "$1"
+    fi
+}
+
+# Lines of the [Script-weave] section of kwinrc (no header, no blank lines).
+section_lines() {
+    [ -f "$CONFIG" ] || return 0
+    awk '/^\[/ { sec = ($0 == "[Script-weave]"); next } sec && NF { print }' "$CONFIG"
+}
+plugins_value() {
+    [ -f "$CONFIG" ] || return 0
+    awk '/^\[/ { sec = ($0 == "[Plugins]"); next }
+        sec && index($0, "weaveEnabled=") == 1 { print substr($0, 14); exit }' "$CONFIG"
+}
+
+# Read-only detection of a live Weave setup. Sets LIVE_FOUND and LIVE_REPORT.
+detect_live() {
+    LIVE_FOUND=false
+    LIVE_REPORT=
+    ENABLED_PRESENT=no
+    ENABLED_VALUE=
+    if [ -e "$SCRIPTS/weave" ] || [ -L "$SCRIPTS/weave" ]; then
+        LIVE_FOUND=true
+        LIVE_REPORT="$LIVE_REPORT  - installed package: $SCRIPTS/weave
+"
+    fi
+    value=$(kreadconfig6 --file "$CONFIG" --group Plugins --key weaveEnabled \
+        --default __weave_absent__ 2>/dev/null || true)
+    if [ -z "$value" ] || [ "$value" = __weave_absent__ ]; then value=$(plugins_value); fi
+    if [ -n "$value" ] && [ "$value" != __weave_absent__ ]; then
+        LIVE_FOUND=true
+        ENABLED_PRESENT=yes
+        ENABLED_VALUE=$value
+        LIVE_REPORT="$LIVE_REPORT  - [Plugins] weaveEnabled=$value in $CONFIG
+"
+    fi
+    keys=$(section_lines | grep -c '=' || true)
+    if [ "${keys:-0}" -gt 0 ]; then
+        LIVE_FOUND=true
+        names=$(section_lines | sed -n 's/=.*//p' | tr '\n' ' ')
+        LIVE_REPORT="$LIVE_REPORT  - [Script-weave] has $keys key(s): $names
+"
+    fi
+    loaded=$(qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.isScriptLoaded weave \
+        2>/dev/null || true)
+    if [ "$loaded" = true ]; then
+        LIVE_FOUND=true
+        LIVE_LOADED=true
+        LIVE_REPORT="$LIVE_REPORT  - the script 'weave' is loaded in KWin
+"
+    fi
+}
+
+# Copies the live setup into a mktemp directory and into the state directory, before any
+# change. Anything that fails here stops the run with nothing modified.
+snapshot_live() {
+    SNAP_TMP=$(mktemp -d)
+    SNAP_KEEP=$STATE_ROOT/restore-$(date +%Y%m%dT%H%M%S)-$$
+    (umask 077; mkdir -p "$SNAP_KEEP") || return 1
+    if [ -e "$SCRIPTS/weave" ]; then
+        mkdir "$SNAP_TMP/package" && cp -a "$SCRIPTS/weave/." "$SNAP_TMP/package/" || return 1
+        [ ! -L "$SCRIPTS/weave" ] || readlink "$SCRIPTS/weave" > "$SNAP_TMP/package.link"
+        : > "$SNAP_TMP/package.present"
+    fi
+    section_lines > "$SNAP_TMP/script-weave.lines" || return 1
+    printf '%s\n' "$ENABLED_PRESENT" > "$SNAP_TMP/weaveEnabled.present"
+    printf '%s\n' "$ENABLED_VALUE" > "$SNAP_TMP/weaveEnabled.value"
+    printf '%s\n' "$LIVE_LOADED" > "$SNAP_TMP/loaded"
+    [ ! -f "$CONFIG" ] || cp -p "$CONFIG" "$SNAP_TMP/kwinrc.before" || return 1
+    [ ! -f "$STATE_FILE" ] || cp -p "$STATE_FILE" "$SNAP_TMP/state.json.file" || return 1
+    if state_text=$(qdbus6 org.weave.State /State org.weave.State.Get 2>/dev/null); then
+        printf '%s' "$state_text" > "$SNAP_TMP/state.text"
+    fi
+    cp -a "$SNAP_TMP/." "$SNAP_KEEP/" || return 1
+    diff -r "$SNAP_TMP" "$SNAP_KEEP" >/dev/null || return 1
+    say "Live Weave setup saved to $SNAP_KEEP"
+}
+
+restore_fail() { say "RESTORE STEP FAILED: $*"; RESTORE_FAILED=true; }
+
+# Puts back exactly what snapshot_live saved. Every step runs even if one fails.
+restore_live() {
+    snap=$SNAP_TMP
+    [ -d "$snap" ] || snap=$SNAP_KEEP
+    qdbus6 org.kde.KWin /Scripting unloadScript weave >/dev/null 2>&1
+    cfg_enabled_set false || restore_fail "disable the throwaway script"
+    qdbus6 org.kde.KWin /KWin reconfigure
+    qdbus6 org.kde.KWin /Scripting unloadScript weave
+    if [ "$PKG_TOUCHED" = true ]; then
+        run kpackagetool6 --type=KWin/Script -r weave || restore_fail "remove throwaway package"
+    fi
+    if [ -f "$snap/package.present" ]; then
+        install_pkg "$snap/package" || restore_fail "reinstall the saved package"
+        RESTORE_NOTES="$RESTORE_NOTES package"
+    fi
+    for key in $HARNESS_KEYS; do
+        cfg_del "$key" || restore_fail "delete the harness key $key"
+    done
+    count=$(grep -c '=' "$snap/script-weave.lines" || true)
+    index=1
+    while [ "$index" -le "${count:-0}" ]; do
+        line=$(grep '=' "$snap/script-weave.lines" | sed -n "${index}p")
+        key=${line%%=*}
+        value=${line#*=}
+        kw_set Script-weave "$key" "$value" || restore_fail "write back the key $key"
+        index=$((index + 1))
+    done
+    RESTORE_NOTES="$RESTORE_NOTES ${count:-0}-config-keys"
+    if [ "$(cat "$snap/weaveEnabled.present")" = yes ]; then
+        kw_set Plugins weaveEnabled "$(cat "$snap/weaveEnabled.value")" \
+            || restore_fail "restore weaveEnabled"
+    else
+        cfg_enabled_del || restore_fail "delete weaveEnabled again"
+    fi
+    qdbus6 org.kde.KWin /KWin reconfigure
+    if [ -f "$snap/state.text" ]; then
+        qdbus6 org.weave.State /State org.weave.State.Set "$(cat "$snap/state.text")" \
+            || restore_fail "restore the persistent state"
+        RESTORE_NOTES="$RESTORE_NOTES state"
+    fi
+    if [ "$(cat "$snap/loaded")" = true ]; then
+        qdbus6 org.kde.KWin /Scripting start || restore_fail "start the script again"
+        RESTORE_NOTES="$RESTORE_NOTES script-restarted"
+    fi
+    # Check the result against the snapshot.
+    now=$(section_lines | grep '=' | sort)
+    was=$(grep '=' "$snap/script-weave.lines" | sort)
+    [ "$now" = "$was" ] || restore_fail "[Script-weave] differs from the snapshot"
+    if [ -f "$snap/package.present" ]; then
+        diff -r "$snap/package" "$SCRIPTS/weave" >/dev/null \
+            || restore_fail "the package differs from the snapshot"
+    elif [ -e "$SCRIPTS/weave" ]; then
+        restore_fail "a package is installed that was not there before"
+    fi
+    if [ "$(plugins_value)" != "$(cat "$snap/weaveEnabled.value")" ]; then
+        restore_fail "weaveEnabled differs from the snapshot"
+    fi
+}
+
+restore_failure_message() {
+    say "################################################################"
+    say "LIVE WEAVE SETUP NOT FULLY RESTORED."
+    say "The saved snapshot is kept in: $SNAP_KEEP"
+    [ ! -d "$SNAP_TMP" ] || say "A second copy is kept in: $SNAP_TMP"
+    say "Manual restore (the kwin scripts folder is $SCRIPTS):"
+    say "  1. qdbus6 org.kde.KWin /Scripting unloadScript weave"
+    say "  2. kpackagetool6 --type=KWin/Script -r weave"
+    say "  3. kpackagetool6 --type=KWin/Script -i $SNAP_KEEP/package"
+    say "  4. rewrite every line of $SNAP_KEEP/script-weave.lines into the"
+    say "     [Script-weave] section of $CONFIG (kwriteconfig6, or copy kwinrc.before)"
+    say "  5. set [Plugins] weaveEnabled as in weaveEnabled.present / .value"
+    say "  6. qdbus6 org.kde.KWin /KWin reconfigure"
+    say "  7. qdbus6 org.weave.State /State org.weave.State.Set \"\$(cat $SNAP_KEEP/state.text)\""
+    say "  8. qdbus6 org.kde.KWin /Scripting start"
+    say "################################################################"
+}
+
+# Removes only what this run added when there was no live setup.
+uninstall_throwaway() {
+    if [ "$ENABLED_TOUCHED" = true ]; then cfg_enabled_set false; fi
+    qdbus6 org.kde.KWin /KWin reconfigure
+    # Disabling does not unload a running script; a loaded one stays stale.
+    qdbus6 org.kde.KWin /Scripting unloadScript weave
+    if [ "$PKG_TOUCHED" = true ]; then run kpackagetool6 --type=KWin/Script -r weave; fi
+    if [ "$ENABLED_TOUCHED" = true ]; then cfg_enabled_del; fi
+    if [ "$KEYS_TOUCHED" = true ]; then
+        for key in $HARNESS_KEYS; do cfg_del "$key"; done
+    fi
+    qdbus6 org.kde.KWin /KWin reconfigure
+}
+
 cleanup() {
     result=$?
     trap - EXIT INT TERM
@@ -35,18 +252,9 @@ cleanup() {
             kill "$pid" 2>/dev/null
         done
         for pid in ${KCALC_PIDS-}; do wait "$pid" 2>/dev/null; done
-        kwriteconfig6 --file "$CONFIG" --group Plugins --key weaveEnabled false
-        qdbus6 org.kde.KWin /KWin reconfigure
-        # Disabling does not unload a running script; a loaded one stays stale.
-        qdbus6 org.kde.KWin /Scripting unloadScript weave
-        kpackagetool6 --type=KWin/Script -r weave
-        kwriteconfig6 --file "$CONFIG" --group Plugins --key weaveEnabled --delete
-        kwriteconfig6 --file "$CONFIG" --group Script-weave --key manageClasses --delete
-        kwriteconfig6 --file "$CONFIG" --group Script-weave --key settleSeconds --delete
-        kwriteconfig6 --file "$CONFIG" --group Script-weave --key logLevel --delete
-        kwriteconfig6 --file "$CONFIG" --group Script-weave --key defaultMode --delete
-        kwriteconfig6 --file "$CONFIG" --group Script-weave --key tileClasses --delete
-        qdbus6 org.kde.KWin /KWin reconfigure
+        if [ "$MODIFIED" = true ]; then
+            if [ "$LIVE_FOUND" = true ]; then restore_live; else uninstall_throwaway; fi
+        fi
         printf 'Remaining kcalc PIDs: '
         pgrep -x kcalc || true
         config_count=$(grep -ic weave "$CONFIG" 2>/dev/null || true)
@@ -54,25 +262,42 @@ cleanup() {
             2>/dev/null | wc -l | tr -d ' ')
         say "Leftover weave lines in kwinrc: $config_count"
         say "Installed weave scripts: $script_count"
+        if [ "$LIVE_FOUND" != true ]; then
+            say "Live install: none found"
+        elif [ "$MODIFIED" != true ]; then
+            say "Live install: untouched (the run stopped before any change)"
+        elif [ "$RESTORE_FAILED" = true ]; then
+            say "Live install: RESTORE FAILED"
+            restore_failure_message
+            [ "$result" -ne 0 ] || result=4
+        else
+            say "Live install: restored ($RESTORE_NOTES; snapshot kept in $SNAP_KEEP)"
+        fi
     else
         say "DRY-RUN: cleanup removes only recorded kcalc PIDs and harness settings."
     fi
     [ -z "${TMP_DIR-}" ] || rm -rf "$TMP_DIR"
+    if [ -n "${SNAP_TMP-}" ] && [ "$RESTORE_FAILED" != true ]; then rm -rf "$SNAP_TMP"; fi
     exit "$result"
 }
 
 if [ "$DRY_RUN" = true ]; then
     say "Dry run: no commands will be executed."
+    say "DRY-RUN: detect a live Weave (no changes): package in the scripts folder,"
+    say "DRY-RUN: [Plugins] weaveEnabled, [Script-weave] keys in kwinrc, isScriptLoaded weave"
+    say "DRY-RUN: live Weave found and no --takeover: print what was found, exit 3, no change"
+    say "DRY-RUN: --takeover: snapshot the package, [Script-weave] lines, weaveEnabled,"
+    say "DRY-RUN: loaded flag and org.weave.State.Get into a mktemp dir and into"
+    say "DRY-RUN: $STATE_ROOT/restore-<timestamp>/"
     run sh "$ROOT/script/build.sh"
-    run kpackagetool6 --type=KWin/Script -i "$ROOT/script/dist"
-    run kwriteconfig6 --file "$CONFIG" --group Plugins --key weaveEnabled true
+    say "DRY-RUN: kpackagetool6 --type=KWin/Script -i script/dist (-u when a package exists)"
+    say "DRY-RUN: kwriteconfig6 Plugins weaveEnabled true"
     RESOURCE_CLASS=$(sed -n 's/^var KCALC_RESOURCE_CLASS = "\([^"]*\)";.*/\1/p' \
         "$JS_DIR/expected.js")
-    run kwriteconfig6 --file "$CONFIG" --group Script-weave --key manageClasses \
-        "$RESOURCE_CLASS"
-    run kwriteconfig6 --file "$CONFIG" --group Script-weave --key settleSeconds 0
-    run kwriteconfig6 --file "$CONFIG" --group Script-weave --key logLevel debug
-    run qdbus6 org.kde.KWin /KWin reconfigure
+    say "DRY-RUN: kwriteconfig6 Script-weave manageClasses $RESOURCE_CLASS"
+    say "DRY-RUN: kwriteconfig6 Script-weave settleSeconds 0"
+    say "DRY-RUN: kwriteconfig6 Script-weave logLevel debug"
+    say "DRY-RUN: qdbus6 org.kde.KWin /KWin reconfigure"
     say "DRY-RUN: pgrep -x kcalc"
     say "DRY-RUN: mktemp -d"
     say "DRY-RUN: cat core sources and expected.js > <tmp>/check-prefix.js"
@@ -112,13 +337,31 @@ if [ "$DRY_RUN" = true ]; then
     say "DRY-RUN: check-s11a.js (not moved); select-first-kcalc.js; invoke Weave Snap Left Half;"
     say "DRY-RUN: check-s11b.js; invoke Weave Toggle Float; check-s11c.js (tiled, fills);"
     say "DRY-RUN: invoke Weave Toggle Float; check-s11d.js (previous rect restored)"
+    say "DRY-RUN: S12: place-s12.js puts two floating kcalc windows side by side (third apart)"
+    say "DRY-RUN: activate-live.js; invoke Weave Resize Grow Width / Shrink Width;"
+    say "DRY-RUN: check-s12a.js and check-s12b.js (shared edge moves, neighbour follows, and back)"
+    say "DRY-RUN: invoke Weave Resize Grow; check-s12c.js; invoke Weave Resize Fill; check-s12d.js"
     say "DRY-RUN: journalctl result parsing, summary table, optional JSON array"
     say "DRY-RUN: kill <recorded PID> and wait <recorded PID> for each launch"
-    say "DRY-RUN: disable/remove Weave, delete four harness config keys, reconfigure"
+    say "DRY-RUN: without a live install: disable/remove Weave, delete the harness keys"
+    say "DRY-RUN: with --takeover: unload and remove the throwaway, reinstall the saved package,"
+    say "DRY-RUN: delete the harness keys, rewrite the saved [Script-weave] lines, restore"
+    say "DRY-RUN: weaveEnabled, reconfigure, org.weave.State.Set <saved>, Scripting start"
+    say "DRY-RUN: report 'Live install: none found' or 'Live install: restored (...)'"
     say "DRY-RUN: pgrep -x kcalc; grep kwinrc; find installed scripts; rm -rf <tmp>"
     exit 0
 fi
 
+# --- live run ---
+detect_live
+if [ "$LIVE_FOUND" = true ] && [ "$TAKEOVER" != true ]; then
+    say "Refusing to run: a live Weave setup was found and this harness would replace it."
+    say "Found:"
+    printf '%s' "$LIVE_REPORT"
+    say "Nothing was changed. Close nothing, or re-run with --takeover to save this setup"
+    say "first and put it back when the run ends (snapshot under $STATE_ROOT)."
+    exit 3
+fi
 if pgrep -x kcalc >/dev/null 2>&1; then
     say "Refusing to run: kcalc is already running. Close it and retry."
     exit 2
@@ -127,6 +370,11 @@ TMP_DIR=$(mktemp -d)
 KCALC_PIDS=
 trap cleanup EXIT
 trap 'exit 1' INT TERM
+if [ "$LIVE_FOUND" = true ]; then
+    say "Takeover: live Weave setup found:"
+    printf '%s' "$LIVE_REPORT"
+    snapshot_live || { say "FAIL: could not save the live setup; nothing was changed"; exit 1; }
+fi
 RESOURCE_CLASS=$(sed -n 's/^var KCALC_RESOURCE_CLASS = "\([^"]*\)";.*/\1/p' \
     "$JS_DIR/expected.js")
 cat "$ROOT/core/geometry.js" "$ROOT/core/tree.js" "$ROOT/core/snap.js" \
@@ -138,15 +386,15 @@ cat "$ROOT/core/templates.json" >> "$TMP_DIR/check-prefix.js"
 printf ';\n' >> "$TMP_DIR/check-prefix.js"
 
 run sh "$ROOT/script/build.sh"
+MODIFIED=true
 qdbus6 org.kde.KWin /Scripting unloadScript weave >/dev/null 2>&1 || true
 BUILD_ID=$(cat "$ROOT/script/dist/BUILD_ID")
 BUILD_TS=$(date --iso-8601=seconds)
-run kpackagetool6 --type=KWin/Script -i "$ROOT/script/dist"
-run kwriteconfig6 --file "$CONFIG" --group Plugins --key weaveEnabled true
-run kwriteconfig6 --file "$CONFIG" --group Script-weave --key manageClasses \
-    "$RESOURCE_CLASS"
-run kwriteconfig6 --file "$CONFIG" --group Script-weave --key settleSeconds 0
-run kwriteconfig6 --file "$CONFIG" --group Script-weave --key logLevel debug
+install_pkg "$ROOT/script/dist"
+cfg_enabled_set true
+cfg_set manageClasses "$RESOURCE_CLASS"
+cfg_set settleSeconds 0
+cfg_set logLevel debug
 run qdbus6 org.kde.KWin /KWin reconfigure
 # Config-enabled scripts are loaded on reconfigure but only run after start.
 run qdbus6 org.kde.KWin /Scripting start
@@ -239,7 +487,7 @@ run_script() {
     else
         cat "$TMP_DIR/check-prefix.js" > "$TMP_DIR/$name.js"
         case "$source_file" in
-            check-s7*|check-s8*|check-s9*|check-s10*|check-s11*|activate-live.js|move-s8.js)
+            check-s7*|check-s8*|check-s9*|check-s10*|check-s11*|check-s12*|activate-live.js|move-s8.js)
                 printf '%s\n' "$LIVE_PRE" >> "$TMP_DIR/$name.js" ;;
         esac
         cat "$JS_DIR/$source_file" >> "$TMP_DIR/$name.js"
@@ -292,6 +540,7 @@ snapshot_first_size() {
 
 SCENARIOS="S1 S2 S3 S4 S5 S6 S7a S7b S7c S7d S8a S8b S8c S9a S9b S9c S9d"
 SCENARIOS="$SCENARIOS S10a S10b S10c S10d S10e S10f S10g S10h S11a S11b S11c S11d"
+SCENARIOS="$SCENARIOS S12a S12b S12c S12d"
 
 summary() {
     statuses=
@@ -508,8 +757,8 @@ sleep 3
 stop_kcalc || { say "S11: kcalc did not close"; S11_OK=false; }
 if [ "$S11_OK" = true ]; then
     qdbus6 org.kde.KWin /Scripting unloadScript weave >/dev/null 2>&1 || true
-    run kwriteconfig6 --file "$CONFIG" --group Script-weave --key defaultMode float
-    run kwriteconfig6 --file "$CONFIG" --group Script-weave --key tileClasses ""
+    cfg_set defaultMode float
+    cfg_set tileClasses ""
     S11_TS=$(date --iso-8601=seconds)
     run qdbus6 org.kde.KWin /KWin reconfigure
     run qdbus6 org.kde.KWin /Scripting start
@@ -559,6 +808,46 @@ if [ "$S11_OK" = true ]; then
     invoke "Weave Toggle Float"
     sleep 1
     run_script check-s11d.js weave-live-check-s11d S11d
+fi
+# S12: tiler-style resize of floating windows. Two kcalc windows are placed side by side
+# sharing an edge (the third stays apart); expectations come from the core, which also
+# says how many geometry writes Weave may make per key press (a loop would write more).
+s12_before() { S12_TS=$(date --iso-8601=seconds); }
+s12_check() {
+    sleep 1
+    S12_WRITES=$(journal_count "$S12_TS" 'weave geometry ')
+    LIVE_PRE="var liveIds = [$S12_JS]; var weaveWrites = ${S12_WRITES:-0};"
+    run_script "check-$1.js" "weave-live-check-$1" "$2"
+}
+S12_OK=$S11_OK
+if [ "$S12_OK" = true ]; then
+    LIVE_PRE=
+    LAST_STEP_LINE=
+    run_script place-s12.js weave-live-place-s12 ''
+    sleep 1.5
+    S12_IDS=${LAST_STEP_LINE#WEAVE_LIVE_STEP s12 ids }
+    case "$S12_IDS" in *unsafe*|'') S12_OK=false ;; esac
+fi
+if [ "$S12_OK" = true ]; then
+    set -- $S12_IDS
+    S12_JS=$(ids_js "$1" "$2" "$3")
+    say "S12 windows (first is resized): $S12_IDS"
+    activate_in "$S12_JS" 0
+    sleep 1
+    s12_before
+    invoke "Weave Resize Grow Width"
+    s12_check s12a S12a
+    s12_before
+    invoke "Weave Resize Shrink Width"
+    s12_check s12b S12b
+    s12_before
+    invoke "Weave Resize Grow"
+    s12_check s12c S12c
+    s12_before
+    invoke "Weave Resize Fill"
+    s12_check s12d S12d
+else
+    say "S12 skipped: windows missing or a non-kcalc window would be moved"
 fi
 # Let the 2 s save debounce fire before cleanup unloads the script.
 sleep 3

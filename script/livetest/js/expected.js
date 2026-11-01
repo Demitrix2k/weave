@@ -527,8 +527,143 @@ var KCALC_RESOURCE_CLASS = "org.kde.kcalc";
         return pass;
     }
 
+    // ---- S12: tiler-style resize of floating kcalc windows (a and b share an edge) ----
+
+    var S12_STEPS = [
+        {scenario: "S12a", kind: "resize", axis: "h", delta: RESIZE_STEP},
+        {scenario: "S12b", kind: "resize", axis: "h", delta: -RESIZE_STEP},
+        {scenario: "S12c", kind: "resize", axis: "both", delta: RESIZE_STEP},
+        {scenario: "S12d", kind: "fill"}
+    ];
+
+    // kcalc's minimum size is 250x341: a and b stay above it through every step.
+    var S12_MIN = {width: 250, height: 341};
+    function s12Start(area) {
+        var a = {x: area.x + 8, y: area.y + 8, width: 500, height: 400};
+        var b = {x: a.x + a.width + 8, y: a.y, width: 600, height: 400};
+        var c = {x: b.x + b.width + 300, y: a.y, width: 400, height: 400};
+        return {a: a, b: b, c: c};
+    }
+
+    function onDesktopOf(window, desktop) {
+        if (window.onAllDesktops === true) { return true; }
+        var list = window.desktops;
+        return !list || list.length === 0 || list.indexOf(desktop) >= 0;
+    }
+
+    // Normal windows of the output and desktop that are not part of the test.
+    function s12Outsiders(workspace, reference, desktop) {
+        var name = typeof reference.output === "string" ? reference.output :
+            String(reference.output.name);
+        return workspace.windowList().filter(function (window) {
+            var output = window.output;
+            var outputName = typeof output === "string" ? output : String(output.name);
+            return String(window.resourceClass) !== KCALC_RESOURCE_CLASS &&
+                window.normalWindow === true && !window.minimized && !window.desktopWindow &&
+                outputName === name && onDesktopOf(window, desktop);
+        }).map(function (window) {
+            return {id: "outsider-" + String(window.internalId), rect: actual(window),
+                movable: true};
+        });
+    }
+
+    function s12Item(id, rect) { return {id: id, rect: rect, movable: true}; }
+
+    // Replays the four S12 steps on the core: rects of a, b and c after each step, how many
+    // windows each step writes, and whether any step would move a window that is not kcalc.
+    function s12Plan(workspace, ids, engine) {
+        coreApi = engine || coreApi;
+        var found = kcalcWindows(workspace).filter(function (window) {
+            return ids.indexOf(String(window.internalId)) >= 0;
+        });
+        if (ids.length !== 3 || found.length !== 3) { return null; }
+        var desktop = desktopFor(workspace, found[0]);
+        var area = workArea(workspace, found[0].output, desktop);
+        var outsiders = s12Outsiders(workspace, found[0], desktop);
+        var start = s12Start(area);
+        var state = {};
+        state[ids[0]] = start.a;
+        state[ids[1]] = start.b;
+        state[ids[2]] = start.c;
+        var plan = {area: area, start: state, states: [], writes: [], unsafe: false,
+            small: false};
+        S12_STEPS.forEach(function (step) {
+            var next = JSON.parse(JSON.stringify(state));
+            var items = [s12Item(ids[1], state[ids[1]]), s12Item(ids[2], state[ids[2]])]
+                .concat(outsiders);
+            if (step.kind === "fill") {
+                var filled = coreApi.fillRect(items.map(function (item) { return item.rect; }),
+                    area, GAPS);
+                if (filled) { next[ids[0]] = filled; }
+                plan.small = !filled || filled.width < S12_MIN.width ||
+                    filled.height < S12_MIN.height;
+            } else {
+                var result = coreApi.resizeNeighbours(state[ids[0]], items, area, GAPS,
+                    step.axis, step.delta);
+                next[ids[0]] = result.rect;
+                result.moves.forEach(function (move) {
+                    if (next[move.id]) { next[move.id] = move.rect; } else { plan.unsafe = true; }
+                });
+            }
+            plan.writes.push(ids.filter(function (id) {
+                return !equalRect(state[id], next[id]);
+            }).length);
+            plan.states.push(next);
+            state = next;
+        });
+        return plan;
+    }
+
+    function s12Place(workspace, ids, engine) {
+        coreApi = engine || coreApi;
+        var plan = s12Plan(workspace, ids);
+        if (!plan) { return null; }
+        kcalcWindows(workspace).forEach(function (window) {
+            var rect = plan.start[String(window.internalId)];
+            if (rect) { window.frameGeometry = rect; }
+        });
+        return plan;
+    }
+
+    // weaveWrites is the number of "weave geometry" journal lines since the key was invoked.
+    function s12Step(scenario, workspace, ids, weaveWrites, engine) {
+        coreApi = engine || coreApi;
+        var plan = s12Plan(workspace, ids);
+        if (!plan) {
+            emit(scenario, false, [], [], {error: "windows missing"});
+            return false;
+        }
+        var index = S12_STEPS.map(function (step) { return step.scenario; }).indexOf(scenario);
+        var want = plan.states[index];
+        var wanted = ids.map(function (id) { return want[id]; });
+        var current = ids.map(function (id) {
+            return actual(kcalcWindows(workspace).filter(function (window) {
+                return String(window.internalId) === id;
+            })[0]);
+        });
+        var same = wanted.every(function (rect, at) { return equalRect(rect, current[at]); });
+        // A Fill rectangle below kcalc's minimum size (other windows cover the output)
+        // cannot be matched exactly: KWin enlarges and shifts the window, so only the
+        // left edge and the minimum size are checked then.
+        var degraded = scenario === "S12d" && plan.small;
+        if (degraded) {
+            same = current[0].x === wanted[0].x && current[0].width >= S12_MIN.width &&
+                current[0].height >= S12_MIN.height && equalRect(wanted[1], current[1]) &&
+                equalRect(wanted[2], current[2]);
+        }
+        var quiet = weaveWrites === plan.writes[index];
+        var pass = same && quiet && !plan.unsafe;
+        emit(scenario, pass, wanted, current, {writes: weaveWrites,
+            expectedWrites: plan.writes[index], unsafe: plan.unsafe, degraded: degraded});
+        return pass;
+    }
+
     api = {
         floatStep: floatStep,
+        s12Step: s12Step,
+        s12Place: s12Place,
+        s12Plan: s12Plan,
+        s12Start: s12Start,
         runLive: runLive,
         resourceClass: KCALC_RESOURCE_CLASS,
         rounded: rounded,

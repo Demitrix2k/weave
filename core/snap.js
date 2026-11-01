@@ -48,14 +48,38 @@
         return g.rect(x, y, width, height);
     }
 
+    function isComposite(action) {
+        return action === 'third' || action === 'twoThirds';
+    }
+
     function snapRect(action, area, gaps, current) {
         const workArea = g.workRect(area, gaps);
         const gap = (gaps || {}).inner || 0;
         const actions = halfAndQuarterActions(workArea, gap);
         addThirdActions(actions, workArea, gap);
         actions.centerQuarter = centeredQuarter(workArea);
-        if (!actions[action]) {
+        if (!actions[action] && !isComposite(action)) {
             throw new Error('Unknown snap action: ' + action);
+        }
+        const cycles = [
+            ['leftHalf', 'rightHalf'],
+            ['topHalf', 'bottomHalf'],
+            ['topLeft', 'topRight', 'bottomLeft', 'bottomRight'],
+            ['leftThird', 'centerThird', 'rightThird']
+        ];
+        const composite = {
+            third: ['leftThird', 'centerThird', 'rightThird'],
+            twoThirds: ['leftTwoThirds', 'rightTwoThirds']
+        };
+        if (composite[action]) {
+            const steps = composite[action];
+            const at = steps.findIndex(step => current && g.equalRects(current, actions[step]));
+            return actions[steps[(at + 1) % steps.length]];
+        }
+        const cycle = cycles.find(items => items.includes(action));
+        if (cycle && current && g.equalRects(current, actions[action])) {
+            const next = (cycle.indexOf(action) + 1) % cycle.length;
+            return actions[cycle[next]];
         }
         return actions[action];
     }

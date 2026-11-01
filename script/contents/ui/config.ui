@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>WeaveConfigForm</class>
+ <widget class="QWidget" name="WeaveConfigForm">
+  <property name="windowTitle"><string>Weave</string></property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <item>
+    <widget class="QGroupBox" name="windowRulesGroup">
+     <property name="title"><string>Window rules</string></property>
+     <layout class="QFormLayout" name="windowRulesLayout">
+      <item row="0" column="0"><widget class="QLabel" name="manageClassesLabel"><property name="text"><string>Manage classes:</string></property><property name="toolTip"><string>Comma-separated resource classes. Use * for all classes and !class to exclude one.</string></property></widget></item>
+      <item row="0" column="1"><widget class="QLineEdit" name="kcfg_manageClasses"><property name="placeholderText"><string>e.g. *,!org.kde.plasmashell</string></property><property name="clearButtonEnabled"><bool>true</bool></property></widget></item>
+      <item row="1" column="0"><widget class="QLabel" name="defaultModeLabel"><property name="text"><string>Default mode:</string></property></widget></item>
+      <item row="1" column="1"><widget class="QComboBox" name="kcfg_defaultMode"><item><property name="text"><string>tiled</string></property></item><item><property name="text"><string>float</string></property></item></widget></item>
+      <item row="2" column="0"><widget class="QLabel" name="tileClassesLabel"><property name="text"><string>Classes to tile:</string></property><property name="toolTip"><string>Comma-separated resource classes that should tile even when the default mode is float.</string></property></widget></item>
+      <item row="2" column="1"><widget class="QLineEdit" name="kcfg_tileClasses"><property name="placeholderText"><string>e.g. zen,vesktop</string></property><property name="clearButtonEnabled"><bool>true</bool></property></widget></item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="spacingGroup">
+     <property name="title"><string>Spacing and sizing</string></property>
+     <layout class="QFormLayout" name="spacingLayout">
+      <item row="0" column="0"><widget class="QLabel" name="gapInnerLabel"><property name="text"><string>Inner gap:</string></property></widget></item>
+      <item row="0" column="1"><widget class="QSpinBox" name="kcfg_gapInner"><property name="suffix"><string> px</string></property><property name="maximum"><number>400</number></property></widget></item>
+      <item row="1" column="0"><widget class="QLabel" name="gapOuterLabel"><property name="text"><string>Outer gap:</string></property></widget></item>
+      <item row="1" column="1"><widget class="QSpinBox" name="kcfg_gapOuter"><property name="suffix"><string> px</string></property><property name="maximum"><number>400</number></property></widget></item>
+      <item row="2" column="0"><widget class="QLabel" name="masterRatioLabel"><property name="text"><string>Master area ratio:</string></property></widget></item>
+      <item row="2" column="1"><widget class="QDoubleSpinBox" name="kcfg_masterRatio"><property name="decimals"><number>2</number></property><property name="minimum"><double>0.00</double></property><property name="maximum"><double>1.00</double></property><property name="singleStep"><double>0.05</double></property></widget></item>
+      <item row="3" column="0"><widget class="QLabel" name="focusRatioLabel"><property name="text"><string>Stage focus ratio:</string></property></widget></item>
+      <item row="3" column="1"><widget class="QDoubleSpinBox" name="kcfg_focusRatio"><property name="decimals"><number>2</number></property><property name="minimum"><double>0.30</double></property><property name="maximum"><double>0.80</double></property><property name="singleStep"><double>0.05</double></property></widget></item>
+      <item row="4" column="0"><widget class="QLabel" name="resizeStepLabel"><property name="text"><string>Resize step:</string></property></widget></item>
+      <item row="4" column="1"><widget class="QSpinBox" name="kcfg_resizeStep"><property name="suffix"><string> px</string></property><property name="minimum"><number>8</number></property><property name="maximum"><number>400</number></property></widget></item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="behaviorGroup">
+     <property name="title"><string>Behavior</string></property>
+     <layout class="QFormLayout" name="behaviorLayout">
+      <item row="0" column="0"><widget class="QLabel" name="defaultLayoutLabel"><property name="text"><string>Default layout:</string></property></widget></item>
+      <item row="0" column="1"><widget class="QComboBox" name="kcfg_defaultLayout"><item><property name="text"><string>master</string></property></item><item><property name="text"><string>columns</string></property></item><item><property name="text"><string>monocle</string></property></item><item><property name="text"><string>spiral</string></property></item><item><property name="text"><string>stage</string></property></item></widget></item>
+      <item row="1" column="0"><widget class="QLabel" name="settleSecondsLabel"><property name="text"><string>Startup settle time:</string></property><property name="toolTip"><string>Wait this many seconds after the last window appears before adopting the session.</string></property></widget></item>
+      <item row="1" column="1"><widget class="QSpinBox" name="kcfg_settleSeconds"><property name="suffix"><string> s</string></property><property name="maximum"><number>60</number></property></widget></item>
+      <item row="2" column="0" colspan="2"><widget class="QCheckBox" name="kcfg_dropNativeTiles"><property name="text"><string>Remove KWin native tiles from managed windows</string></property></widget></item>
+      <item row="3" column="0" colspan="2"><widget class="QCheckBox" name="kcfg_persist"><property name="text"><string>Remember window modes and layouts across restarts</string></property></widget></item>
+      <item row="4" column="0"><widget class="QLabel" name="logLevelLabel"><property name="text"><string>Log level:</string></property></widget></item>
+      <item row="4" column="1"><widget class="QComboBox" name="kcfg_logLevel"><item><property name="text"><string>off</string></property></item><item><property name="text"><string>info</string></property></item><item><property name="text"><string>debug</string></property></item></widget></item>
+     </layout>
+    </widget>
+   </item>
+   <item><spacer name="bottomSpacer"><property name="orientation"><enum>Qt::Orientation::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>0</height></size></property></spacer></item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

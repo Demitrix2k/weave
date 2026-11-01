@@ -117,3 +117,34 @@ test('classic scripts concatenate without require in an isolated engine', () => 
     assert.equal(vm.runInContext('Weave.snapRect("maximize", {x:0,y:0,width:100,height:100}, {outer:5}).width', sandbox), 90);
     assert.equal(vm.runInContext('Weave.tree.layout(Weave.tree.columns(["a","b"]), {x:0,y:0,width:100,height:100}, {}).b.x', sandbox), 50);
 });
+test('snap third cycles left, centre, right and back with exact rects', () => {
+    const wa = g.rect(0, 0, 1200, 800);
+    const gp = {inner: 8, outer: 8};
+    const left = g.rect(8, 8, 389, 784);
+    const centre = g.rect(405, 8, 390, 784);
+    const right = g.rect(803, 8, 389, 784);
+    const press = current => api.snapRect('third', wa, gp, current);
+    assert.deepEqual(press(undefined), left);
+    assert.deepEqual(press(g.rect(13, 77, 301, 222)), left);
+    assert.deepEqual(press(api.snapRect('leftHalf', wa, gp)), left);
+    assert.deepEqual(press(left), centre);
+    assert.deepEqual(press(centre), right);
+    assert.deepEqual(press(right), left);
+    assert.deepEqual(api.snapRect('leftThird', wa, gp, left), centre);
+});
+test('snap twoThirds cycles left and right two-thirds that overlap the middle third', () => {
+    const wa = g.rect(0, 0, 1200, 800);
+    const gp = {inner: 8, outer: 8};
+    const left = g.rect(8, 8, 787, 784);
+    const right = g.rect(405, 8, 787, 784);
+    const press = current => api.snapRect('twoThirds', wa, gp, current);
+    assert.deepEqual(press(undefined), left);
+    assert.deepEqual(press(g.rect(13, 77, 301, 222)), left);
+    assert.deepEqual(press(left), right);
+    assert.deepEqual(press(right), left);
+    assert.deepEqual(api.snapRect('leftTwoThirds', wa, gp, left), left);
+    assert.deepEqual(api.snapRect('rightTwoThirds', wa, gp), right);
+    const middle = api.snapRect('centerThird', wa, gp);
+    assert.equal(left.x + left.width, middle.x + middle.width);
+    assert.equal(right.x, middle.x);
+});

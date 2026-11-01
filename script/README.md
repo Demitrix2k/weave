@@ -1,10 +1,9 @@
 # Weave KWin adapter v0
 
-This package is a source-only adapter for review and unit tests. It has not been
-installed, loaded, enabled, or run in KWin. `manageClasses` defaults to empty,
-so no windows are managed until classes are explicitly listed. Shortcut
-registrations have empty default keys; the separate shortcut-profile tool
-assigns keys.
+This repository contains the pure layout core and classic KWin script adapter.
+`manageClasses` defaults to empty, so no windows are managed until classes are
+explicitly listed. Shortcut registrations have empty default keys; the separate
+shortcut-profile tool assigns keys.
 
 Build the classic KWin script with `./script/build.sh`.
 The build writes the package to `script/dist/` (ignored by Git; install that
@@ -14,6 +13,10 @@ in `contents/code/main.js`; the build injects a content hash and the adapter log
 loaded on reconfigure but only runs after `qdbus6 org.kde.KWin /Scripting start`, and
 disabling does not unload it (use `unloadScript weave`), so the live harness does both.
 Run all tests with `node --test core/test script/test`.
+
+Settings are available from System Settings → Window Management → KWin Scripts → Weave →
+Configure. Applying the dialog writes the options to `[Script-weave]` in `kwinrc`; the
+running adapter reloads them on KWin's `configChanged` signal.
 
 `manageClasses` is a comma-separated list of exact `resourceClass` values. `*` means
 every class, and `!name` excludes one (`*,!org.kde.plasmashell`); a list of only
@@ -32,6 +35,12 @@ them arrives tiled, any other managed window arrives with `defaultMode`.
   Its remembered float rectangle is the rectangle it has. Toggle Float tiles it into its
   context and the next toggle returns it to that rectangle; a free drag or resize updates
   the remembered rectangle and never relayouts anything.
+- Repeating a half or quarter snap while the window still matches that slot cycles
+  to the next slot in that grid (for example, Left Half then Left Half moves to Right Half).
+- `Snap Third` (Meta+Alt+D) moves to the left third, then centre, right and back to left
+  on each press; from any other rectangle it goes to the left third. `Snap Two Thirds`
+  (Meta+Alt+F) alternates between the left and right two-thirds, starting at the left.
+  G is unbound.
 - At startup (the observe/settle phase) nothing is moved. Windows whose class is not in
   `tileClasses` are adopted as floating when `defaultMode` is `float`; `tileClasses` windows
   are adopted as before (tree inferred from their rectangles). If the tiled candidates do not
@@ -104,8 +113,9 @@ focus, otherwise the first); leaving re-derives a tree from the current order.
 
 The five actions Krohnkite had. All shortcuts have empty default keys. They act on the
 active window and do nothing for windows that are not managed, and (apart from Float All)
-for floating or arranged windows. Move, Resize, Master and Promote also do nothing in a
-context that has an arrangement.
+for floating or arranged windows (except Resize and Resize Fill, which work on floating
+windows). Move, Resize, Master and Promote also do nothing in a context that has an
+arrangement.
 
 - `Weave Move Left` / `Move Right` / `Move Up` / `Move Down`: the active tiled window swaps
   with the nearest window in that direction, found from the layout rectangles (a window
@@ -115,10 +125,40 @@ context that has an arrangement.
 - `Weave Resize Grow Width` / `Shrink Width` / `Grow Height` / `Shrink Height`: moves the
   edge of the nearest ancestor split on that axis by `resizeStep` px, so this window grows
   or shrinks by the step (each pane keeps 100 px). No split on that axis means no change
-  (a lone window, monocle, a master window's height). A floating window grows or shrinks
-  by the step in total (half per side), stays inside the work area and keeps at least
-  150 px. In Stage only the focus window's width works: it changes the context's focus
-  ratio (0.3 to 0.8); rail windows and the height keys do nothing.
+  (a lone window, monocle, a master window's height). In Stage only the focus window's
+  width works: it changes the context's focus ratio (0.3 to 0.8); rail windows and the
+  height keys do nothing. Floating windows resize like a tiler, see below.
+- `Weave Resize Grow` / `Resize Shrink`: both dimensions at once. Floating windows follow
+  the rules below; a tiled window applies its width and then its height resize.
+- `Weave Resize Fill` (floating windows only): the window takes the largest free
+  rectangle inside the work area (outer gap kept) that overlaps no other window (inner
+  gap kept around them). Candidate edges are the work area and the other windows' edges;
+  among equal areas the leftmost, then the topmost wins. Nothing free means no change.
+  Tiled and arranged windows ignore it.
+
+Floating resize (a port of the `Rectangle: Resize: Grow/Shrink` actions of the user's
+kwin-rectangle fork; `Grow`/`Shrink` and the width/height variants share the rules). The
+step is `resizeStep` px on the long axis of the work area and scaled by its aspect ratio on
+the other, and each side moves on its own:
+
+- a side that faces another window within the inner gap plus 12 px (or overlaps it by up
+  to 4 px) moves the shared edge, and that window is resized with it: it gives space when
+  growing (it keeps at least 200 px wide / 150 px high, which limits the step) and takes
+  space back when shrinking;
+- a side facing free space moves until the next window (inner gap kept) or the work-area
+  edge (outer gap kept);
+- a side on the work-area edge stays put; shrinking a window pinned on both sides of an
+  axis shrinks it from both sides;
+- a step that would leave the window under 200x150 is refused.
+
+Neighbours are the normal, visible windows on the same output and desktop, managed or not.
+Only unmanaged and floating windows are moved (through `setGeometry`, so the expected-
+geometry guard sees the writes; a managed floating one also remembers its new size). Tiled,
+arranged and Stage windows are never moved: they block the side (it does not grow) but
+shrinking still works. Differences from the fork: 200x150 and the 4/12 px tolerances are
+the fork's numbers; the work area replaces its margins; tiled windows block instead of
+being moved; the fork's Rectangle-state bookkeeping (unsnap restore) does not exist here.
+
 - `Weave Master More` / `Master Fewer`: master-window count of the context for the
   `master` layout (at least 1, at most windows minus one but never below 1). The layout
   is re-derived from the current order; other layouts ignore the shortcuts. The count
@@ -174,3 +214,61 @@ Windows are matched by resource class plus a normalised caption, never by id.
 Without the helper, `callDBus`, or with `persist=false`, behaviour is the same
 as before. Nothing is moved because of saved state; install the helper with
 `helper/install.sh` (use `--dry-run` first).
+
+## Live harness (`script/livetest/livetest.sh`)
+
+`timeout 300 sh script/livetest/livetest.sh` installs a throwaway Weave, runs the kcalc
+scenarios inside the running KWin session and removes the throwaway again. It only
+touches kcalc windows, and writes only the `[Script-weave]` keys `manageClasses`,
+`settleSeconds`, `logLevel`, `defaultMode` and `tileClasses` plus `[Plugins] weaveEnabled`.
+Options: `--dry-run` (prints the plan, including the snapshot and restore steps, runs
+nothing), `--json`, `--takeover`.
+
+**A live Weave is never replaced by accident.** Before it changes anything the harness
+looks (read only) for a live setup: a `weave` package in `~/.local/share/kwin/scripts`,
+a `[Plugins] weaveEnabled` entry, any key in `[Script-weave]` of `~/.config/kwinrc`, or a
+loaded script `weave`. If it finds one and `--takeover` was not given it lists what it
+found and ends with **exit code 3**, before any `kwriteconfig6`, `kpackagetool6`,
+`unloadScript` or other state-changing call. Exit code 2 still means kcalc is already
+running.
+
+**`--takeover`** allows the replacement and makes it reversible:
+
+1. Before any change it saves the live setup twice: into a `mktemp` directory (kept until
+   cleanup is done) and into
+   `${XDG_STATE_HOME:-$HOME/.local/state}/weave-livetest/restore-<timestamp>-<pid>/`, so a
+   crash cannot lose it. The snapshot holds `package/` (the installed package folder),
+   `script-weave.lines` (every line of `[Script-weave]`), `weaveEnabled.present` and
+   `weaveEnabled.value`, `loaded` (was the script loaded), `kwinrc.before` (the whole
+   file), `state.text` (`org.weave.State.Get`, the persistent state) and
+   `state.json.file` (a copy of `~/.local/state/weave/state.json`).
+2. When the run ends (also after a failure or Ctrl+C) cleanup unloads and removes the
+   throwaway, reinstalls the saved package, deletes the harness keys, writes every saved
+   key back, restores `weaveEnabled` (or deletes it when it was absent), reconfigures,
+   sets the saved state with `org.weave.State.Set` (instead of leaving what the
+   throwaway wrote), and calls `qdbus6 org.kde.KWin /Scripting start` when the script was
+   loaded, so your Weave runs again. It then checks the result against the snapshot.
+3. The report ends with `Live install: restored (...)`; the mktemp copy is deleted and
+   the copy under `~/.local/state/weave-livetest/` stays. Without a live install the
+   report says `Live install: none found` and the throwaway is removed as before.
+4. If any restore step fails the harness prints `Live install: RESTORE FAILED`, the path
+   of the snapshot and the manual steps, keeps the snapshot and exits non-zero.
+
+Manual restore from a snapshot `S`:
+
+```sh
+qdbus6 org.kde.KWin /Scripting unloadScript weave
+kpackagetool6 --type=KWin/Script -r weave
+kpackagetool6 --type=KWin/Script -i S/package        # -u if weave is still installed
+# put the lines of S/script-weave.lines back under [Script-weave] in ~/.config/kwinrc
+# (kwriteconfig6 --file ~/.config/kwinrc --group Script-weave --key K V), or copy
+# S/kwinrc.before over it; set [Plugins] weaveEnabled as in S/weaveEnabled.*
+qdbus6 org.kde.KWin /KWin reconfigure
+qdbus6 org.weave.State /State org.weave.State.Set "$(cat S/state.text)"
+qdbus6 org.kde.KWin /Scripting start
+```
+
+Tests: `script/test/livetest.test.js` runs the real harness against stub executables
+(`kreadconfig6`, `kwriteconfig6`, `kpackagetool6`, `qdbus6`, `journalctl`, `kcalc`, ...)
+in a temporary `HOME`; the test hooks are the environment variables
+`WEAVE_LIVETEST_KWINRC` and `WEAVE_LIVETEST_SCRIPTS` (defaults: the real paths).
