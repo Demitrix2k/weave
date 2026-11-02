@@ -18,11 +18,13 @@ its private event queue changes when recording or consuming expectations.
   width, height. Splits return [a,b]. translateClamp offsets between work areas,
   clamps position, and shrinks only when the rectangle cannot fit.
 - tree: insert, remove, swap, setRatio, dockToSide, layout, hitTest, edgeAt,
-  infer, masterStack, columns, monocle, spiral. `infer(rectsById, area,
+  infer, masterStack, columns, monocle, spiral, rows, hstack, rmaster, grid,
+  ultrawide. `infer(rectsById, area,
   tolerance)` returns `{tree, gap}` for non-overlapping guillotine partitions,
   where `gap` is the inferred common inner gap, or `null` when inference fails.
 - snap: snapRect(action, workArea, gaps, current), all specified actions.
-- tree layouts by name: LAYOUTS (`master`, `columns`, `monocle`, `spiral`),
+- tree layouts by name: LAYOUTS (`master`, `columns`, `monocle`, `spiral`, `rows`, `hstack`, `rmaster`,
+  `grid`, `ultrawide`),
   RESERVED_LAYOUTS (`stage`), validLayout(name), generate(name, list,
   {masterRatio, nMaster}) (unknown names fall back to master-stack),
   cycleLayout(name, step) and leafOrder(tree) (window IDs, first child first).
@@ -51,6 +53,18 @@ its private event queue changes when recording or consuming expectations.
 - ExpectedGeometry: new ExpectedGeometry(), record(id,rect), consume(id,rect),
   clear(id). Each recorded geometry matches once; unmatched events retain the queue.
 
+### Window limits and fit
+
+- `tree.maxWindows(name)`: default maximum of tiled windows (`tree.MAX_WINDOWS`); `Infinity`
+  for monocle.
+- `tree.limitSplit(ids, arrival, limit, keep)`: `{tiled, floated}`; the newest arrivals
+  (`arrival` lists ids oldest to newest) float first, never `keep`.
+- `tree.fit(ids, mins, area, gaps, name, params)`: `mins[id] = {width, height}`. Floats the
+  newest window whose cell is below its minimum, recomputes, repeats; `params` has `nMaster`,
+  `masterRatio`, `arrival`, `keep`. If only `keep` is too small, the newest others float.
+- Both are pure: re-tiling is the caller's job. The adapter passes tiled plus auto-floated
+  ids (arrival order) through them again on layout, master or capacity changes.
+
 ## Design ambiguities and chosen policies
 
 - `h` splits width (left/right), `v` splits height (top/bottom). Ratios apply to
@@ -65,7 +79,14 @@ its private event queue changes when recording or consuming expectations.
   also accepts dotted strings. Root path is []; no hit is null.
 - Docking uses a 50/50 root split. Master-stack defaults to one master and 60%,
   stacking masters and secondaries vertically. Columns use equal width before
-  gaps; spiral rotates left, top, right, bottom. Empty generators return null.
+  gaps; spiral rotates left, top, right, bottom. rows: equal full-width rows. hstack: masters
+  side by side on top (masterRatio = top share), stack side by side below. rmaster: master-stack
+  mirrored (master on the right, still masterRatio wide; leaf order is stack first, master last).
+  grid: ceil(sqrt(n)) columns, rows filled left to right, a short last row spans the width.
+  ultrawide: first window the centre column (masterRatio wide, default 0.5), then right and
+  left side columns alternating, each a vertical line; two windows give centre + right.
+  Empty generators return null. Pictures: `docs/layouts/` (regenerate with
+  `node core/tools/render-layouts.js`).
 - Minimum sizes include all stacked windows. Infeasible split minima share
   available space in proportion to their minimum requirements, retaining bounds
   and non-overlap rather than extending outside the work area.

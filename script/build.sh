@@ -36,3 +36,5 @@ sed "s/@@BUILD_ID@@/$hash/" "$tmp" > "$dist/contents/code/main.js"
 cp "$root/script/metadata.json" "$dist/metadata.json"
 printf '%s\n' "$hash" > "$dist/BUILD_ID"
 printf 'weave build %s\n' "$hash"
+
+sh "$root/script/build-picker.sh"

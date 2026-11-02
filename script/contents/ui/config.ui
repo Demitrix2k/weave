@@ -31,6 +31,8 @@
       <item row="3" column="1"><widget class="QDoubleSpinBox" name="kcfg_focusRatio"><property name="decimals"><number>2</number></property><property name="minimum"><double>0.30</double></property><property name="maximum"><double>0.80</double></property><property name="singleStep"><double>0.05</double></property></widget></item>
       <item row="4" column="0"><widget class="QLabel" name="resizeStepLabel"><property name="text"><string>Resize step:</string></property></widget></item>
       <item row="4" column="1"><widget class="QSpinBox" name="kcfg_resizeStep"><property name="suffix"><string> px</string></property><property name="minimum"><number>8</number></property><property name="maximum"><number>400</number></property></widget></item>
+      <item row="5" column="0"><widget class="QLabel" name="maxWindowsLabel"><property name="text"><string>Max tiled windows (0 = per layout):</string></property></widget></item>
+      <item row="5" column="1"><widget class="QSpinBox" name="kcfg_maxWindows"><property name="maximum"><number>99</number></property></widget></item>
      </layout>
     </widget>
    </item>
@@ -39,7 +41,7 @@
      <property name="title"><string>Behavior</string></property>
      <layout class="QFormLayout" name="behaviorLayout">
       <item row="0" column="0"><widget class="QLabel" name="defaultLayoutLabel"><property name="text"><string>Default layout:</string></property></widget></item>
-      <item row="0" column="1"><widget class="QComboBox" name="kcfg_defaultLayout"><item><property name="text"><string>master</string></property></item><item><property name="text"><string>columns</string></property></item><item><property name="text"><string>monocle</string></property></item><item><property name="text"><string>spiral</string></property></item><item><property name="text"><string>stage</string></property></item></widget></item>
+      <item row="0" column="1"><widget class="QComboBox" name="kcfg_defaultLayout"><item><property name="text"><string>master</string></property></item><item><property name="text"><string>columns</string></property></item><item><property name="text"><string>monocle</string></property></item><item><property name="text"><string>spiral</string></property></item><item><property name="text"><string>stage</string></property></item><item><property name="text"><string>rows</string></property></item><item><property name="text"><string>hstack</string></property></item><item><property name="text"><string>rmaster</string></property></item><item><property name="text"><string>grid</string></property></item><item><property name="text"><string>ultrawide</string></property></item></widget></item>
       <item row="1" column="0"><widget class="QLabel" name="settleSecondsLabel"><property name="text"><string>Startup settle time:</string></property><property name="toolTip"><string>Wait this many seconds after the last window appears before adopting the session.</string></property></widget></item>
       <item row="1" column="1"><widget class="QSpinBox" name="kcfg_settleSeconds"><property name="suffix"><string> s</string></property><property name="maximum"><number>60</number></property></widget></item>
       <item row="2" column="0" colspan="2"><widget class="QCheckBox" name="kcfg_dropNativeTiles"><property name="text"><string>Remove KWin native tiles from managed windows</string></property></widget></item>

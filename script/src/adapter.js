@@ -90,7 +90,10 @@
     }
 
     function contextFor(window) {
-        var output = property(window, "output");
+        return contextForOutput(property(window, "output"));
+    }
+
+    function contextForOutput(output) {
         var desktop = typeof workspace.currentDesktopForScreen === "function" ?
             workspace.currentDesktopForScreen(output) : property(workspace, "currentDesktop");
         var name = outputName(output);
@@ -157,6 +160,7 @@
                 ["tiled", "float"], "tiled"),
             gapInner: Math.max(0, Number(readConfigValue("gapInner", 8)) || 0),
             gapOuter: Math.max(0, Number(readConfigValue("gapOuter", 8)) || 0),
+            maxWindows: Math.max(0, Math.floor(Number(readConfigValue("maxWindows", 0)) || 0)),
             settleSeconds: Math.max(0, Math.floor(Number(
                 readConfigValue("settleSeconds", 3)) || 0)),
             dropNativeTiles: configBoolean(readConfigValue("dropNativeTiles", true), true),
@@ -165,7 +169,8 @@
             focusRatio: Number(readConfigValue("focusRatio", 0.6)),
             resizeStep: Number(readConfigValue("resizeStep", 76)),
             defaultLayout: choiceValue(readConfigValue("defaultLayout", "master"),
-                ["master", "columns", "monocle", "spiral", "stage"], "master"),
+                ["master", "columns", "monocle", "spiral", "stage", "rows", "hstack",
+                    "rmaster", "grid", "ultrawide"], "master"),
             logLevel: choiceValue(readConfigValue("logLevel", "off"),
                 ["off", "info", "debug"], "off")
         };
@@ -278,8 +283,95 @@
         return api.tree.layout(context.tree, workArea(context), contextGaps(context));
     }
 
-    function applyContext(context) {
+    // Most tiled windows a context may hold: the setting when positive (not for
+    // monocle), else the layout's default.
+    function windowLimit(context) {
+        if (config.maxWindows > 0 && context.layout !== "monocle" &&
+            !stageLayout(context)) { return config.maxWindows; }
+        return api.tree.maxWindows(context.layout);
+    }
+
+    function windowMin(state) {
+        var size = property(state.window, "minSize");
+        var width = size ? Number(property(size, "width")) : 0;
+        var height = size ? Number(property(size, "height")) : 0;
+        return {width: isNaN(width) ? 0 : width, height: isNaN(height) ? 0 : height};
+    }
+
+    // Windows the system floated (over the limit or no fit) that belong to the context.
+    function autoFloatedOf(context) {
+        return contextStates(context).filter(function (state) {
+            return state.autoFloated && state.mode === "float";
+        });
+    }
+
+    // Floats the windows that exceed the layout's limit or cannot reach their
+    // minimum size (newest first, never the active window) and marks them
+    // autoFloated. With `retile` the context's autoFloated windows first rejoin the
+    // candidates (arrival order), so they come back as soon as they fit again.
+    function enforceLimits(context, retile) {
         if (context.groups.length) { return; }
+        var back = retile ? autoFloatedOf(context) : [];
+        if (back.length) {
+            back.sort(function (a, b) { return a.seq - b.seq; });
+            context.ids = orderedIds(context);
+            back.forEach(function (state) {
+                state.autoFloated = false;
+                state.mode = "tiled";
+                state.context = context;
+                context.ids.push(state.id);
+            });
+            contexts.set(context.key, context);
+            rebuild(context);
+        }
+        if (!context.ids.length) { return; }
+        var active = activeState();
+        var keep = active && active.context.key === context.key ? active.id : null;
+        var arrival = context.ids.slice().sort(function (a, b) {
+            return states.get(a).seq - states.get(b).seq;
+        });
+        var split = api.tree.limitSplit(context.ids, arrival, windowLimit(context), keep);
+        var out = split.floated.map(function (id) { return {id: id, why: "overlimit"}; });
+        if (!stageLayout(context)) {
+            var mins = {};
+            split.tiled.forEach(function (id) { mins[id] = windowMin(states.get(id)); });
+            var fitted = api.tree.fit(split.tiled, mins, workArea(context),
+                contextGaps(context), context.layout, {nMaster: context.nMaster,
+                    masterRatio: config.masterRatio, arrival: arrival, keep: keep});
+            fitted.floated.forEach(function (id) { out.push({id: id, why: "nofit"}); });
+        }
+        if (!out.length) { return; }
+        var members = out.map(function (item) {
+            log("info", item.why + " " + item.id + " " + context.layout);
+            return states.get(item.id);
+        });
+        var fresh = members.filter(function (state) { return back.indexOf(state) < 0; });
+        members.forEach(function (state) {
+            state.mode = "float";
+            state.autoFloated = true;
+        });
+        context.ids = context.ids.filter(function (id) {
+            return members.indexOf(states.get(id)) < 0;
+        });
+        if (context.adopted && !stageLayout(context) && !back.length) {
+            members.forEach(function (state) {
+                context.tree = api.tree.remove(context.tree, state.id);
+            });
+        } else { rebuild(context); }
+        // windows that were already floating stay where they are
+        fresh.forEach(function (state) {
+            if (!state.floatGeometry) { return; }
+            state.floatGeometry = restoreFloatGeometry(state);
+            setGeometry(state.window, state.floatGeometry);
+        });
+        scheduleSave();
+    }
+
+    // `retile`: autoFloated windows of the context may come back (layout change,
+    // master count, configuration, capacity freed).
+    function applyContext(context, retile) {
+        if (context.groups.length) { return; }
+        enforceLimits(context, retile);
         var rects = contextRects(context);
         context.ids.forEach(function (id) {
             var state = states.get(id);
@@ -509,7 +601,8 @@
             reassigning: false,
             seq: ++arrivalSeq,
             prevMode: null,
-            groupId: null
+            groupId: null,
+            autoFloated: false
         };
     }
 
@@ -644,7 +737,7 @@
         } else {
             rebuild(context);
         }
-        if (context.ids.length) { applyContext(context); }
+        if (context.ids.length || autoFloatedOf(context).length) { applyContext(context, true); }
         else { discardIfEmpty(context); }
         scheduleSave();
     }
@@ -662,7 +755,7 @@
             state.floatGeometry = restoreFloatGeometry(state);
             setGeometry(state.window, state.floatGeometry);
         }
-        if (state.context.ids.length) { applyContext(state.context); }
+        if (state.context.ids.length) { applyContext(state.context, true); }
         else { discardIfEmpty(state.context); }
         scheduleSave();
     }
@@ -681,6 +774,7 @@
         state.floatGeometry = roundedRect(property(state.window, "frameGeometry"));
         state.floatWorkArea = workArea(state.context);
         state.mode = "tiled";
+        state.autoFloated = false;
         state.context.ids.push(state.id);
         rebuild(state.context);
         applyContext(state.context);
@@ -756,6 +850,7 @@
             state.context = next;
             return;
         }
+        state.autoFloated = false;
         state.reassigning = true;
         try {
             if (state.mode === "arranged") { detachFromGroup(state); }
@@ -781,7 +876,7 @@
                 next.ids.push(state.id);
                 rebuild(next);
             }
-            if (previous.ids.length) { applyContext(previous); }
+            if (previous.ids.length) { applyContext(previous, true); }
             if (state.mode === "tiled") { applyContext(next); }
             log("info", "moved " + state.id + " from " + previous.key + " to " + next.key);
         } finally {
@@ -832,6 +927,7 @@
     function rememberFloat(state) {
         var rect = roundedRect(property(state.window, "frameGeometry"));
         if (!rect) { return; }
+        state.autoFloated = false;
         state.floatGeometry = rect;
         state.floatWorkArea = workArea(state.context);
         scheduleSave();
@@ -980,6 +1076,7 @@
         if (state.mode === "tiled") { floating(state); }
         var area = workArea(state.context);
         var rect = api.snapRect(action, area, contextGaps(state.context), current);
+        state.autoFloated = false;
         state.floatGeometry = rect;
         state.floatWorkArea = area;
         setGeometry(state.window, rect);
@@ -1055,11 +1152,13 @@
         setGeometry(item.window, geometry);
         var other = states.get(item.id);
         if (!other) { return; }
+        other.autoFloated = false;
         other.floatGeometry = roundedRect(geometry);
         other.floatWorkArea = workArea(other.context);
     }
 
     function placeFloat(state, current, next, area) {
+        state.autoFloated = false;
         state.floatGeometry = next;
         state.floatWorkArea = area;
         if (!api.geometry.equalRects(current, next)) { setGeometry(state.window, next); }
@@ -1130,9 +1229,11 @@
         if (state && state.mode === "float") { fillFloating(state); }
     }
 
+    var MASTER_COUNT_LAYOUTS = ["master", "hstack", "rmaster"];
+
     function changeMasters(delta) {
         var state = tiledActive();
-        if (!state || state.context.layout !== "master") { return; }
+        if (!state || MASTER_COUNT_LAYOUTS.indexOf(state.context.layout) < 0) { return; }
         var context = state.context;
         var current = effectiveMasters(context);
         var next = api.tree.clampMasterCount(current, delta, context.ids.length);
@@ -1140,7 +1241,7 @@
         context.nMaster = next;
         context.ids = orderedIds(context);
         rebuild(context);
-        applyContext(context);
+        applyContext(context, true);
         log("info", "masters " + context.key + " -> " + next);
     }
 
@@ -1153,7 +1254,10 @@
     }
 
     function floatEach(context, members) {
-        members.forEach(function (state) { state.mode = "float"; });
+        members.forEach(function (state) {
+            state.mode = "float";
+            state.autoFloated = false;
+        });
         context.ids = context.ids.filter(function (id) {
             return members.indexOf(states.get(id)) < 0;
         });
@@ -1172,16 +1276,25 @@
             state.floatGeometry = roundedRect(property(state.window, "frameGeometry"));
             state.floatWorkArea = workArea(context);
             state.mode = "tiled";
+            state.autoFloated = false;
             state.context = context;
             context.ids.push(state.id);
         });
         contexts.set(context.key, context);
         rebuild(context);
-        applyContext(context);
+        applyContext(context, true);
     }
 
     // Floats every tiled window of the active window's context, or, when none is tiled,
     // tiles the floating ones again in arrival order.
+    // KWin's script settings dialog does not emit options.configChanged on Apply
+    // (KDE bug 463292); an explicit reconfigure does, and refreshConfig() follows.
+    function reloadConfig() {
+        try {
+            sendDBus("org.kde.KWin", "/KWin", "org.kde.KWin", "reconfigure");
+        } catch (error) { logError("reconfigure", error); }
+    }
+
     function floatAll() {
         var active = activeState();
         if (!active) { return; }
@@ -1210,7 +1323,74 @@
         applyContext(context);
     }
 
+    // Windows of a context that focus keys may reach: managed, tiled and not minimized,
+    // in the context's layout order. Floating, arranged and unmanaged windows are skipped.
+    function focusCandidates(context) {
+        return orderedIds(context).filter(function (id) {
+            var state = states.get(id);
+            return state && state.mode === "tiled" && state.context.key === context.key &&
+                !property(state.window, "minimized");
+        });
+    }
+
+    function focusWindow(id, context) {
+        var state = states.get(id);
+        if (!state) { return; }
+        try { workspace.activeWindow = state.window; }
+        catch (error) { logError("focus " + id, error); return; }
+        if (context.layout === "monocle") { raiseWindow(state.window); }
+    }
+
+    // The context a focus key acts on and the active window's id in it (null when the
+    // active window is not a candidate): the active window's, else the cursor monitor's.
+    function focusContext() {
+        var state = activeState();
+        if (state) {
+            var own = contextFor(state.window);
+            if (own && focusCandidates(own).indexOf(state.id) >= 0) {
+                return {context: own, active: state.id};
+            }
+        }
+        var output = outputAtCursor();
+        return output === null ? null : {context: contextForOutput(output), active: null};
+    }
+
+    function focusStep(direction) {
+        var target = focusContext();
+        if (!target) { return; }
+        var order = focusCandidates(target.context);
+        if (!order.length) { return; }
+        var index = order.indexOf(target.active);
+        var next = index < 0 ? 0 : (index + direction + order.length) % order.length;
+        focusWindow(order[next], target.context);
+    }
+
+    function focusToward(direction) {
+        var target = focusContext();
+        if (!target) { return; }
+        var order = focusCandidates(target.context);
+        if (!order.length) { return; }
+        if (target.active === null) {
+            focusWindow(order[0], target.context);
+            return;
+        }
+        var all = contextRects(target.context);
+        var rects = {};
+        order.forEach(function (id) { if (all[id]) { rects[id] = all[id]; } });
+        var id = api.focusTarget(rects, target.active, direction);
+        if (id !== null) {
+            focusWindow(id, target.context);
+        } else if (api.sharesRect(rects, target.active, 4)) {
+            focusStep(direction === "left" || direction === "up" ? -1 : 1);
+        }
+    }
+
     function installKeyShortcuts() {
+        ["Left", "Right", "Up", "Down"].forEach(function (label) {
+            shortcut("Focus " + label, function () { focusToward(label.toLowerCase()); });
+        });
+        shortcut("Focus Next", function () { focusStep(1); });
+        shortcut("Focus Previous", function () { focusStep(-1); });
         ["Left", "Right", "Up", "Down"].forEach(function (label) {
             shortcut("Move " + label, function () { moveToward(label.toLowerCase()); });
         });
@@ -1224,6 +1404,7 @@
         shortcut("Master More", function () { changeMasters(1); });
         shortcut("Master Fewer", function () { changeMasters(-1); });
         shortcut("Float All", floatAll);
+        shortcut("Reload Config", reloadConfig);
         shortcut("Promote", promoteActive);
     }
 
@@ -1259,6 +1440,7 @@
         api.tree.CYCLE_LAYOUTS.forEach(function (name) {
             var label = name.replace(/^./, function (c) { return c.toUpperCase(); });
             shortcut("Layout " + label, function () { switchLayout(name); });
+            shortcut("Tile All " + label, function () { tileAll(name); });
         });
         shortcut("Stage Pin", function () { stagePin(true); });
         shortcut("Stage Unpin", function () { stagePin(false); });
@@ -1333,9 +1515,26 @@
         return state ? contextFor(state.window) : null;
     }
 
+    // rmaster and ultrawide place windows out of list order (master last, centre in
+    // the middle), so the geometric leaf order is mapped back to list order. Only
+    // when the tree holds exactly the context's windows.
+    var REORDERED_LAYOUTS = ["rmaster", "ultrawide"];
+
+    function logicalOrder(context, order) {
+        if (REORDERED_LAYOUTS.indexOf(context.layout) < 0 ||
+            order.length !== context.ids.length || order.length < 2) { return order; }
+        var slots = order.map(function (id, index) { return String(index); });
+        var shape = api.tree.leafOrder(api.tree.generate(context.layout, slots,
+            {masterRatio: config.masterRatio, nMaster: effectiveMasters(context)}));
+        var result = new Array(order.length);
+        shape.forEach(function (slot, position) { result[Number(slot)] = order[position]; });
+        return result;
+    }
+
     function orderedIds(context) {
         var order = stageLayout(context) && context.stage ?
             api.stage.order(context.stage) : api.tree.leafOrder(context.tree);
+        order = logicalOrder(context, order);
         var inTree = order.filter(function (id) {
             return context.ids.indexOf(id) >= 0;
         });
@@ -1344,7 +1543,12 @@
     }
 
     function switchLayout(name) {
-        var context = activeContext();
+        switchLayoutIn(activeContext(), name, null);
+    }
+
+    // Sets a context's layout. `floating` (optional) are float states of the context that
+    // are tiled in the same step, so they are placed once, by the new layout.
+    function switchLayoutIn(context, name, floating) {
         if (!context || !api.tree.validAnyLayout(name)) { return; }
         var wasStage = stageLayout(context);
         context.ids = orderedIds(context);
@@ -1352,11 +1556,44 @@
         if (name === "stage") { enterStage(context, wasStage); }
         else { rebuild(context); }
         log("info", "layout " + context.key + " -> " + name);
-        if (context.ids.length) { applyContext(context); }
+        if (floating && floating.length) { tileEach(context, floating); }
+        else if (context.ids.length || autoFloatedOf(context).length) {
+            applyContext(context, true);
+        }
         var state = activeState();
-        if (name === "monocle" && state && state.mode === "tiled") {
+        if (name === "monocle" && state && state.mode === "tiled" &&
+            state.context.key === context.key) {
             raiseWindow(state.window);
         }
+    }
+
+    // The output whose geometry holds the mouse cursor, or null.
+    function outputAtCursor() {
+        var point = property(workspace, "cursorPos");
+        var outputs = property(workspace, "screens") || property(workspace, "outputs");
+        if (typeof outputs === "function") { outputs = outputs.call(workspace); }
+        if (!point || !outputs || typeof outputs.length !== "number") { return null; }
+        for (var index = 0; index < outputs.length; index++) {
+            var area = property(outputs[index], "geometry");
+            if (area && point.x >= area.x && point.x < area.x + area.width &&
+                point.y >= area.y && point.y < area.y + area.height) {
+                return outputs[index];
+            }
+        }
+        return null;
+    }
+
+    // Sets the layout of the context under the mouse cursor and tiles its floating
+    // managed windows. Tiled and arranged windows keep their place in the order.
+    function tileAll(name) {
+        var output = outputAtCursor();
+        if (output === null) { return; }
+        var context = contextForOutput(output);
+        var floating = contextStates(context).filter(function (state) {
+            return state.mode === "float";
+        });
+        switchLayoutIn(context, name, floating);
+        scheduleSave();
     }
 
     // Builds the stage from the current order; the active window takes the focus.
@@ -1449,6 +1686,7 @@
             return;
         }
         state.mode = "float";
+        state.autoFloated = false;
         state.floatGeometry = restoreFloatGeometry(state);
         setGeometry(state.window, state.floatGeometry);
     }
@@ -1552,7 +1790,7 @@
         });
         contexts.forEach(function (context) {
             context.innerGap = null;
-            applyContext(context);
+            applyContext(context, true);
         });
         if (typeof workspace.windowList === "function") {
             workspace.windowList().forEach(function (window) {

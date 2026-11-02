@@ -30,7 +30,7 @@ done
 # The only [Script-weave] keys this harness ever writes or deletes (without --takeover
 # the section is empty at the start, so they are its own; with --takeover the whole
 # section is saved first).
-HARNESS_KEYS="manageClasses settleSeconds logLevel defaultMode tileClasses"
+HARNESS_KEYS="manageClasses settleSeconds logLevel defaultMode tileClasses defaultLayout gapInner gapOuter"
 MODIFIED=false
 PKG_TOUCHED=false
 ENABLED_TOUCHED=false
@@ -297,6 +297,7 @@ if [ "$DRY_RUN" = true ]; then
     say "DRY-RUN: kwriteconfig6 Script-weave manageClasses $RESOURCE_CLASS"
     say "DRY-RUN: kwriteconfig6 Script-weave settleSeconds 0"
     say "DRY-RUN: kwriteconfig6 Script-weave logLevel debug"
+    say "DRY-RUN: kwriteconfig6 Script-weave gapInner 8 (and gapOuter 8; the checks assume 8 px gaps)"
     say "DRY-RUN: qdbus6 org.kde.KWin /KWin reconfigure"
     say "DRY-RUN: pgrep -x kcalc"
     say "DRY-RUN: mktemp -d"
@@ -341,6 +342,10 @@ if [ "$DRY_RUN" = true ]; then
     say "DRY-RUN: activate-live.js; invoke Weave Resize Grow Width / Shrink Width;"
     say "DRY-RUN: check-s12a.js and check-s12b.js (shared edge moves, neighbour follows, and back)"
     say "DRY-RUN: invoke Weave Resize Grow; check-s12c.js; invoke Weave Resize Fill; check-s12d.js"
+    say "DRY-RUN: S13: stop own kcalc, drop defaultMode/tileClasses, restart script, four new kcalc on DP-1"
+    say "DRY-RUN: for rows, hstack, rmaster, grid, ultrawide: invoke Weave Layout <Name>; wait to settle;"
+    say "DRY-RUN: with WEAVE_LIVETEST_SHOTS=<dir>: spectacle -b -n -f -o <dir>/live-<layout>.png (wait up to 5 s for the file)"
+    say "DRY-RUN: check-s13.js (S13a..S13e) prints the four frame rects and asserts the layout shape"
     say "DRY-RUN: journalctl result parsing, summary table, optional JSON array"
     say "DRY-RUN: kill <recorded PID> and wait <recorded PID> for each launch"
     say "DRY-RUN: without a live install: disable/remove Weave, delete the harness keys"
@@ -395,6 +400,12 @@ cfg_enabled_set true
 cfg_set manageClasses "$RESOURCE_CLASS"
 cfg_set settleSeconds 0
 cfg_set logLevel debug
+cfg_set gapInner 8
+cfg_set gapOuter 8
+# A saved real section (--takeover) must not leak: the checks assume tiling arrivals and the master layout.
+cfg_del defaultMode
+cfg_del tileClasses
+cfg_del defaultLayout
 run qdbus6 org.kde.KWin /KWin reconfigure
 # Config-enabled scripts are loaded on reconfigure but only run after start.
 run qdbus6 org.kde.KWin /Scripting start
@@ -467,7 +478,8 @@ load_and_run() {
         return 1
     fi
     LAST_STEP_LINE=$line
-    run qdbus6 org.kde.KWin /Scripting unloadScript "$script_name"
+    # unloadScript prints true/false; that is not a result line
+    qdbus6 org.kde.KWin /Scripting unloadScript "$script_name" >/dev/null 2>&1 || true
 }
 
 run_script() {
@@ -487,7 +499,7 @@ run_script() {
     else
         cat "$TMP_DIR/check-prefix.js" > "$TMP_DIR/$name.js"
         case "$source_file" in
-            check-s7*|check-s8*|check-s9*|check-s10*|check-s11*|check-s12*|activate-live.js|move-s8.js)
+            check-s7*|check-s8*|check-s9*|check-s10*|check-s11*|check-s12*|check-s13*|activate-live.js|move-s8.js)
                 printf '%s\n' "$LIVE_PRE" >> "$TMP_DIR/$name.js" ;;
         esac
         cat "$JS_DIR/$source_file" >> "$TMP_DIR/$name.js"
@@ -495,20 +507,22 @@ run_script() {
     load_and_run "$TMP_DIR/$name.js" "$name" "$scenario"
 }
 
-wait_for_three() {
+wait_for_count() {
+    want_count=$1
     attempt=0
     while [ "$attempt" -lt 40 ]; do
         timestamp=$(date --iso-8601=seconds)
         run_script dump.js weave-live-count ''
         journal=$(journalctl --user --since "$timestamp" -o cat 2>/dev/null || true)
         count=$(printf '%s\n' "$journal" | rg -c '^WEAVE_LIVE_WINDOW ' || true)
-        [ "${count:-0}" -ge 3 ] && return 0
+        [ "${count:-0}" -ge "$want_count" ] && return 0
         sleep 0.5
         attempt=$((attempt + 1))
     done
-    say "Timed out waiting for three kcalc windows."
+    say "Timed out waiting for $want_count kcalc windows."
     return 1
 }
+wait_for_three() { wait_for_count 3; }
 
 # Moving a window between outputs is asynchronous in KWin, so repeat the
 # idempotent send script until it reports no window left to move.
@@ -540,7 +554,7 @@ snapshot_first_size() {
 
 SCENARIOS="S1 S2 S3 S4 S5 S6 S7a S7b S7c S7d S8a S8b S8c S9a S9b S9c S9d"
 SCENARIOS="$SCENARIOS S10a S10b S10c S10d S10e S10f S10g S10h S11a S11b S11c S11d"
-SCENARIOS="$SCENARIOS S12a S12b S12c S12d"
+SCENARIOS="$SCENARIOS S12a S12b S12c S12d S13a S13b S13c S13d S13e"
 
 summary() {
     statuses=
@@ -848,6 +862,77 @@ if [ "$S12_OK" = true ]; then
     s12_check s12d S12d
 else
     say "S12 skipped: windows missing or a non-kcalc window would be moved"
+fi
+
+# S13: the newer layouts with four tiled kcalc windows in one context. Weave goes back to
+# tiling by default (defaultMode and tileClasses removed), four new windows are sent to
+# DP-1, then each layout is switched to, given time to settle, optionally photographed
+# (WEAVE_LIVETEST_SHOTS=<dir>) and checked by shape.
+S13_SHOTS=${WEAVE_LIVETEST_SHOTS-}
+shot() {
+    [ -n "$S13_SHOTS" ] || return 0
+    mkdir -p "$S13_SHOTS" 2>/dev/null || { say "S13: cannot create $S13_SHOTS"; return 0; }
+    shot_file=$S13_SHOTS/live-$1.png
+    rm -f "$shot_file"
+    spectacle -b -n -f -o "$shot_file" >/dev/null 2>&1 || say "S13: spectacle failed for $1"
+    shot_try=0
+    while [ ! -s "$shot_file" ] && [ "$shot_try" -lt 10 ]; do
+        sleep 0.5
+        shot_try=$((shot_try + 1))
+    done
+    if [ -s "$shot_file" ]; then say "S13: screenshot $shot_file"
+    else say "S13: no screenshot for $1"; fi
+}
+S13_OK=$S12_OK
+sleep 3
+if [ "$S13_OK" = true ]; then
+    stop_kcalc || { say "S13: kcalc did not close"; S13_OK=false; }
+fi
+if [ "$S13_OK" = true ]; then
+    qdbus6 org.kde.KWin /Scripting unloadScript weave >/dev/null 2>&1 || true
+    cfg_del defaultMode
+    cfg_del tileClasses
+    S13_TS=$(date --iso-8601=seconds)
+    run qdbus6 org.kde.KWin /KWin reconfigure
+    run qdbus6 org.kde.KWin /Scripting start
+    s13_try=0
+    s13_seen=false
+    while [ "$s13_try" -lt 20 ]; do
+        if journalctl --user --since "$S13_TS" -o cat 2>/dev/null \
+                | grep -qF "weave loaded build=$BUILD_ID"; then
+            s13_seen=true
+            break
+        fi
+        sleep 0.5
+        s13_try=$((s13_try + 1))
+    done
+    [ "$s13_seen" = true ] || { say "S13: script did not restart"; S13_OK=false; }
+fi
+if [ "$S13_OK" = true ]; then
+    sleep 1
+    kcalc >/dev/null 2>&1 & KCALC_PIDS="$KCALC_PIDS $!"
+    kcalc >/dev/null 2>&1 & KCALC_PIDS="$KCALC_PIDS $!"
+    kcalc >/dev/null 2>&1 & KCALC_PIDS="$KCALC_PIDS $!"
+    kcalc >/dev/null 2>&1 & KCALC_PIDS="$KCALC_PIDS $!"
+    wait_for_count 4 || S13_OK=false
+fi
+if [ "$S13_OK" = true ]; then
+    send_all send-kcalc.js weave-live-send-s13
+    sleep 1
+    for s13_pair in rows:S13a:Rows hstack:S13b:Hstack rmaster:S13c:Rmaster \
+            grid:S13d:Grid ultrawide:S13e:Ultrawide; do
+        s13_layout=${s13_pair%%:*}
+        s13_rest=${s13_pair#*:}
+        s13_id=${s13_rest%%:*}
+        s13_label=${s13_rest#*:}
+        invoke "Weave Layout $s13_label"
+        sleep 1.5
+        shot "$s13_layout"
+        LIVE_PRE="var s13Layout = \"$s13_layout\"; var s13Scenario = \"$s13_id\";"
+        run_script check-s13.js "weave-live-check-$s13_id" "$s13_id"
+    done
+else
+    say "S13 skipped: four tiled windows were not available"
 fi
 # Let the 2 s save debounce fire before cleanup unloads the script.
 sleep 3

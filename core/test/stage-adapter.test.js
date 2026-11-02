@@ -59,8 +59,9 @@ test('focusRatioForEdge inverts the layout for every dragged side', () => {
 });
 
 test('the layout cycle runs through the tree layouts and then stage', () => {
-    assert.deepEqual(api.tree.CYCLE_LAYOUTS, ['master', 'columns', 'monocle', 'spiral', 'stage']);
-    assert.equal(api.tree.cycleAnyLayout('spiral', 1), 'stage');
+    assert.deepEqual(api.tree.CYCLE_LAYOUTS, ['master', 'columns', 'monocle', 'spiral', 'rows',
+        'hstack', 'rmaster', 'grid', 'ultrawide', 'stage']);
+    assert.equal(api.tree.cycleAnyLayout('ultrawide', 1), 'stage');
     assert.equal(api.tree.cycleAnyLayout('stage', 1), 'master');
     assert.equal(api.tree.cycleAnyLayout('master', -1), 'stage');
     assert.equal(api.tree.validAnyLayout('stage'), true);

@@ -300,13 +300,17 @@ function clampMasterCount(count, delta, windows) {
   return Math.max(1, Math.min(Math.max(1, windows - 1), wanted));
 }
 function line(list, dir) {
-  if (!list.length)
-    return null;
   if (list.length === 1)
     return leaf(list);
-  const first = leaf([ list[0] ]);
-  const rest = line(list.slice(1), dir);
-  return split(dir, 1 / list.length, first, rest);
+  return lineOf(list.map(id => leaf([ id ])), dir);
+}
+// Equal-sized run of subtrees along one axis (line() for nodes instead of IDs).
+function lineOf(nodes, dir) {
+  if (!nodes.length)
+    return null;
+  if (nodes.length === 1)
+    return nodes[0];
+  return split(dir, 1 / nodes.length, nodes[0], lineOf(nodes.slice(1), dir));
 }
 function columns(list) {
   return line(list, 'h');
@@ -323,6 +327,55 @@ function masterStack(list, nMaster, ratio) {
   const splitRatio = ratio === undefined ? 0.6 : ratio;
   return split('h', splitRatio, master, stack);
 }
+// Every window a full-width row.
+function rows(list) {
+  return line(list, 'v');
+}
+// Master area on top (masters side by side), stack below (side by side).
+function hstack(list, nMaster, ratio) {
+  nMaster = Math.max(1, Math.floor(nMaster === undefined ? 1 : nMaster));
+  if (list.length <= nMaster)
+    return line(list, 'h');
+  const master = line(list.slice(0, nMaster), 'h');
+  const stack = line(list.slice(nMaster), 'h');
+  return split('v', ratio === undefined ? 0.6 : ratio, master, stack);
+}
+// Mirror of masterStack: master on the right, stack on the left. The ratio is
+// still the master's share, so the left child gets 1 - ratio. The leaf order is
+// geometric (stack first, master last), like the spiral's.
+function rmaster(list, nMaster, ratio) {
+  nMaster = Math.max(1, Math.floor(nMaster === undefined ? 1 : nMaster));
+  if (list.length <= nMaster)
+    return line(list, 'v');
+  const master = line(list.slice(0, nMaster), 'v');
+  const stack = line(list.slice(nMaster), 'v');
+  return split('h', 1 - (ratio === undefined ? 0.6 : ratio), stack, master);
+}
+// Balanced grid: ceil(sqrt(n)) columns, rows filled left to right. A short last
+// row shares the full width.
+function grid(list) {
+  if (!list.length)
+    return null;
+  const cols = Math.ceil(Math.sqrt(list.length));
+  const rowTrees = [];
+  for (let i = 0; i < list.length; i += cols)
+    rowTrees.push(line(list.slice(i, i + cols), 'h'));
+  return lineOf(rowTrees, 'v');
+}
+// Centre column first (width ratio, default 0.5), then the right column, then
+// the left one, alternating; each side column is a vertical line. Two windows
+// give centre + right only.
+function ultrawide(list, ratio) {
+  if (list.length < 2)
+    return line(list, 'v');
+  const centre = ratio === undefined ? 0.5 : ratio;
+  const right = line(list.filter((id, i) => i >= 1 && i % 2 === 1), 'v');
+  const left = line(list.filter((id, i) => i >= 2 && i % 2 === 0), 'v');
+  const side = (1 - centre) / 2;
+  const middle = split('h', left ? centre / (1 - side) : centre,
+                       leaf([ list[0] ]), right);
+  return left ? split('h', side, left, middle) : middle;
+}
 function spiral(list) {
   function build(i) {
     if (i >= list.length)
@@ -337,7 +390,80 @@ function spiral(list) {
   }
   return build(0);
 }
-const LAYOUTS = [ 'master', 'columns', 'monocle', 'spiral' ];
+// Default maximum of tiled windows per layout; the rest of a context floats.
+// Stage holds one focus window plus twelve rail cells (see stage.js).
+const MAX_WINDOWS = {
+  master : 8,
+  columns : 6,
+  rows : 5,
+  spiral : 6,
+  hstack : 8,
+  rmaster : 8,
+  grid : 9,
+  ultrawide : 9,
+  monocle : Infinity,
+  stage : 13
+};
+function maxWindows(name) {
+  return MAX_WINDOWS[name] === undefined ? Infinity : MAX_WINDOWS[name];
+}
+function arrivalRank(ids, arrival) {
+  const rank = {};
+  ids.forEach(id => { rank[id] = arrival ? arrival.indexOf(id) : -1; });
+  return rank;
+}
+// Ids sorted newest arrival first. `arrival` lists ids oldest to newest; ids it
+// does not name count as the oldest.
+function newestFirst(ids, arrival) {
+  const rank = arrivalRank(ids, arrival);
+  return ids.slice().sort((a, b) => rank[b] - rank[a]);
+}
+// Splits ids (layout order) into tiled and floated so that at most `limit` stay
+// tiled. The newest arrivals float first; `keep` never does.
+function limitSplit(ids, arrival, limit, keep) {
+  const allowed = Math.max(1, limit);
+  const excess = ids.length - allowed;
+  if (!(excess > 0))
+    return {tiled : ids.slice(), floated : []};
+  const floated = newestFirst(ids.filter(id => id !== keep), arrival)
+                      .slice(0, excess);
+  return {tiled : ids.filter(id => floated.indexOf(id) < 0), floated};
+}
+function tooSmall(rect, min) {
+  return !!rect && !!min && (rect.width < min.width || rect.height < min.height);
+}
+// Floats windows whose computed rectangle is below their own minimum size
+// (`mins[id] = {width, height}`), newest arrival first and never `keep`, and
+// recomputes until the rest fit or nothing more can float. params: nMaster,
+// masterRatio, arrival, keep. Returns {tiled, floated}.
+function fit(ids, mins, area, gaps, name, params) {
+  params = params || {};
+  let tiled = ids.slice();
+  const floated = [];
+  while (tiled.length > 1) {
+    const nMaster = clampMasterCount(params.nMaster, 0, tiled.length);
+    const rects = layout(
+        generate(name, tiled, {nMaster, masterRatio : params.masterRatio}), area,
+        gaps);
+    const bad = tiled.filter(id => tooSmall(rects[id], mins[id]));
+    if (!bad.length)
+      break;
+    let pool = bad.filter(id => id !== params.keep);
+    // Only the protected window is too small: shrinking the others can help it.
+    if (!pool.length)
+      pool = tiled.filter(id => id !== params.keep);
+    if (!pool.length)
+      break;
+    const victim = newestFirst(pool, params.arrival)[0];
+    floated.push(victim);
+    tiled = tiled.filter(id => id !== victim);
+  }
+  return {tiled, floated};
+}
+const LAYOUTS = [
+  'master', 'columns', 'monocle', 'spiral', 'rows', 'hstack', 'rmaster', 'grid',
+  'ultrawide'
+];
 // Not generated by generate(); the Stage layout has its own state (see stage.js).
 const RESERVED_LAYOUTS = [ 'stage' ];
 function validLayout(name) {
@@ -352,6 +478,16 @@ function generate(name, list, params) {
     return monocle(list);
   if (name === 'spiral')
     return spiral(list);
+  if (name === 'rows')
+    return rows(list);
+  if (name === 'hstack')
+    return hstack(list, params.nMaster, params.masterRatio);
+  if (name === 'rmaster')
+    return rmaster(list, params.nMaster, params.masterRatio);
+  if (name === 'grid')
+    return grid(list);
+  if (name === 'ultrawide')
+    return ultrawide(list, params.masterRatio);
   return masterStack(list, params.nMaster, params.masterRatio);
 }
 // Every layout the shortcuts can cycle through: the tree layouts, then stage.
@@ -490,6 +626,11 @@ const api = {
   columns,
   monocle,
   spiral,
+  rows,
+  hstack,
+  rmaster,
+  grid,
+  ultrawide,
   infer,
   LAYOUTS,
   RESERVED_LAYOUTS,
@@ -498,6 +639,10 @@ const api = {
   validAnyLayout,
   cycleAnyLayout,
   generate,
+  maxWindows,
+  limitSplit,
+  fit,
+  MAX_WINDOWS,
   cycleLayout,
   leafOrder
 };

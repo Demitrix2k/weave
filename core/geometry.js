@@ -156,6 +156,60 @@
         return best;
     }
 
+    // ID of the rectangle to focus in a direction, or null. Like neighbour, a rectangle
+    // counts only if its centre and both edges lie further that way; up and down also need
+    // shared width. Lowest score wins: across * 4 + along + centre / 1000, where across is
+    // the gap on the other axis (so lined-up rectangles win), along the gap in the
+    // direction and centre the centre distance along it. The first in key order breaks ties.
+    function focusTarget(rects, id, direction) {
+        const from = rects[id];
+        if (!from) {
+            return null;
+        }
+        const horizontal = direction === 'left' || direction === 'right';
+        const sign = direction === 'left' || direction === 'up' ? -1 : 1;
+        const start = horizontal ? 'x' : 'y';
+        const length = horizontal ? 'width' : 'height';
+        const cross = horizontal ? 'y' : 'x';
+        const crossLength = horizontal ? 'height' : 'width';
+        let best = null;
+        let bestScore = Infinity;
+        Object.keys(rects).forEach(other => {
+            const rectangle = rects[other];
+            if (other === id || !isFurther(from, rectangle, direction)) {
+                return;
+            }
+            const overlap = Math.min(from[cross] + from[crossLength],
+                rectangle[cross] + rectangle[crossLength]) -
+                Math.max(from[cross], rectangle[cross]);
+            if (!horizontal && overlap <= 0) {
+                return;
+            }
+            const across = Math.max(0, rectangle[cross] - from[cross] - from[crossLength],
+                from[cross] - rectangle[cross] - rectangle[crossLength]);
+            const along = sign > 0 ?
+                Math.max(0, rectangle[start] - from[start] - from[length]) :
+                Math.max(0, from[start] - rectangle[start] - rectangle[length]);
+            const centreGap = Math.abs(rectangle[start] + rectangle[length] / 2 -
+                from[start] - from[length] / 2);
+            const score = across * 4 + along + centreGap / 1000;
+            if (score < bestScore) {
+                best = other;
+                bestScore = score;
+            }
+        });
+        return best;
+    }
+
+    // True if another rectangle has the same position and size as id's, each value within
+    // tolerance px (monocle, a Stage overflow stack).
+    function sharesRect(rects, id, tolerance) {
+        const from = rects[id];
+        return !!from && Object.keys(rects).some(other => other !== id &&
+            ['x', 'y', 'width', 'height'].every(key =>
+                Math.abs(rects[other][key] - from[key]) <= tolerance));
+    }
+
     // Floating resize: the size along the axis ('h' width, 'v' height) changes by delta in
     // total, half per side, and stays inside the area and at least minSize (a window already
     // outside those limits is never moved the wrong way).
@@ -347,6 +401,8 @@
 
     const api = {
         neighbour,
+        focusTarget,
+        sharesRect,
         resizeFloat,
         resizeNeighbours,
         fillRect,

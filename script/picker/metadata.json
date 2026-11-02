@@ -1,0 +1,16 @@
+{
+    "KPackageStructure": "KWin/Script",
+    "KPlugin": {
+        "Id": "weave-picker",
+        "Name": "Weave Layout Picker",
+        "Description": "An overlay to pick a Weave layout with the mouse or the keyboard",
+        "Icon": "view-grid",
+        "Authors": [{ "Name": "Demitrix2k" }],
+        "License": "MIT",
+        "Version": "0.1",
+        "EnabledByDefault": false
+    },
+    "X-Plasma-API": "declarativescript",
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-MainScript": "ui/main.qml"
+}

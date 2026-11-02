@@ -66,19 +66,67 @@ adopted at startup or edited by a drag, resize, or dock action.
 ## Layouts (`defaultLayout`, default `master`)
 
 Each context (output, desktop) has a layout: `master`, `columns`, `monocle`,
-`spiral` or `stage` (see below; an unknown `defaultLayout` falls back to
+`spiral`, `rows`, `hstack`, `rmaster`, `grid`, `ultrawide` or `stage` (see below; an unknown `defaultLayout` falls back to
 `master`). New contexts start
 with `defaultLayout`; arrivals and reassignments regenerate the tree with the
 context's own generator. Shortcuts (all with empty default keys): `Weave Layout
 Next`, `Weave Layout Previous`, `Weave Layout Master`, `Weave Layout Columns`,
-`Weave Layout Monocle`, `Weave Layout Spiral`, `Weave Layout Stage` (Next and Previous cycle in that
-order, stage last). A switch re-derives the tree from
+`Weave Layout Monocle`, `Weave Layout Spiral`, `Weave Layout Rows`, `Weave Layout HStack`,
+`Weave Layout RMaster`, `Weave Layout Grid`, `Weave Layout Ultrawide`, `Weave Layout Stage` (Next
+and Previous cycle in that order, stage last). Pictures of every layout: [docs/layouts](../docs/layouts/README.md).
+`rows`: equal full-width rows. `hstack`: master row on top (`masterRatio` high), stack row below.
+`rmaster`: `master` mirrored (master right, still `masterRatio` wide). `grid`: ceil(sqrt(n)) columns,
+short last row spans the width. `ultrawide`: first window a centre column (`masterRatio` wide,
+so 0.6 with the default setting), then right and left side columns alternating. In the settings
+list the new layouts follow `stage`, so saved `defaultLayout` indexes keep their meaning. The adapter maps the
+geometric leaf order of `rmaster` and `ultrawide` back to list order, so cycling layouts keeps
+the window order. A switch re-derives the tree from
 the current leaf order (so drag swaps survive), uses the same `masterRatio` and
 gaps as arrivals, clears the "user edited" state, applies the geometry and logs
 `layout <context key> -> <name>` at info level. Monocle gives every window the
 full work rectangle and raises the active window (and the newly activated one)
 when `workspace.raiseWindow` exists. A context forgets its layout once its last
 tiled window goes away.
+
+## Window limits and fit (`maxWindows`, default 0)
+
+Each layout holds only so many tiled windows; the rest of the context floats instead of
+being squeezed into unusable cells.
+
+| Layout | Default limit |
+| --- | --- |
+| master, hstack, rmaster | 8 |
+| columns, spiral | 6 |
+| rows | 5 |
+| grid, ultrawide | 9 |
+| stage | 13 (focus plus 12 rail cells) |
+| monocle | unlimited |
+
+`maxWindows` (0 to 99) overrides the limit of every tree layout except monocle; 0 uses the
+table. Stage always uses 13.
+
+- **Over the limit:** the windows beyond it float, newest arrival first, never the active
+  window. This runs whenever a context is laid out: a window arrives, a layout is chosen
+  (Layout shortcuts, Tile All, which tiles up to the limit and leaves the rest floating),
+  the master count changes, or the configuration is refreshed. A floated window returns
+  to its remembered float rectangle, as with Toggle Float. Log: `weave overlimit <id> <layout>`.
+- **Fit:** KWin reports each window's `minSize`. If a computed cell is smaller than the
+  window's minimum in width or height, that window floats (newest first, never the active
+  one) and the layout is recomputed until everything fits. If only the active window is
+  too small, the newest others float instead. A missing `minSize` counts as 0. The check
+  uses the generated layout (not hand-resized ratios) and is skipped for stage. Log:
+  `weave nofit <id> <layout>`.
+- **Coming back:** windows floated by Weave itself (over the limit or no fit) are
+  remembered as auto-floated, apart from windows you float. Whenever a context is laid
+  out through a layout change (Layout shortcuts, Tile All, the picker), a master count
+  change, a `maxWindows` or other configuration refresh, or a window leaving it (closed,
+  floated by you, moved to another monitor or desktop), the tiled windows plus the
+  context's auto-floated ones are split again in arrival order. Those that now fit are
+  tiled again, so closing a tiled window re-tiles the oldest auto-floated one first. A
+  window you float yourself (Toggle Float, Float All, dragging it out, snapping) is never
+  re-tiled by Weave, and moving or snapping an auto-floated window makes it yours. Toggle
+  Float on an auto-floated window tiles it and clears the mark. The mark is not
+  persisted: after a restart auto-floated windows count as floating by you.
 
 ## Stage layout (`stage`, `focusRatio` default 0.6, clamped 0.3 to 0.8)
 
@@ -122,6 +170,16 @@ arrangement.
   counts only if its centre and both edges lie further that way; the nearest centre wins).
   At the work-area edge nothing happens. In Stage the window swaps in place with the
   neighbouring cell (pinned cells stay). Marks the context as user-edited, like a drag swap.
+- `Weave Focus Left` / `Focus Right` / `Focus Up` / `Focus Down`: activates the nearest managed
+  tiled window of the context in that direction (layout rectangles; a window counts only if its
+  centre and both edges lie further that way, up and down also need shared width; score
+  across * 4 + along + centre / 1000). Stops at the edge. Only when no window lies that way
+  and another window has the same rectangle (monocle, a Stage overflow stack) do Left and Up
+  act as Previous and Right and Down as Next. `Weave Focus Next` / `Focus Previous` step
+  through the context's layout order (Stage: its order) and wrap. Floating, arranged,
+  unmanaged and minimized windows and other monitors' windows are skipped. Without an active
+  managed window they act on the monitor under the cursor and focus its first window.
+  Monocle raises the focused window.
 - `Weave Resize Grow Width` / `Shrink Width` / `Grow Height` / `Shrink Height`: moves the
   edge of the nearest ancestor split on that axis by `resizeStep` px, so this window grows
   or shrinks by the step (each pane keeps 100 px). No split on that axis means no change
@@ -160,14 +218,27 @@ the fork's numbers; the work area replaces its margins; tiled windows block inst
 being moved; the fork's Rectangle-state bookkeeping (unsnap restore) does not exist here.
 
 - `Weave Master More` / `Master Fewer`: master-window count of the context for the
-  `master` layout (at least 1, at most windows minus one but never below 1). The layout
+  `master`, `hstack` and `rmaster` layouts (at least 1, at most windows minus one but never below 1). The layout
   is re-derived from the current order; other layouts ignore the shortcuts. The count
   is kept per context and is not persisted.
 - `Weave Float All`: if any managed window in the active window's context is tiled, all
   of them become floating (each returns to its remembered float rectangle, as with
   Toggle Float); otherwise every floating window tiles again in arrival order. The
   context keeps its layout. Windows of other contexts and arranged windows are not touched.
-- `Weave Promote`: master, columns, spiral and monocle move the active window to the
+- `Weave Tile All Master` / `Columns` / `Monocle` / `Spiral` / `Rows` / `Hstack` / `Rmaster` /
+  `Grid` / `Ultrawide` / `Stage` (empty default keys; one per layout, named like the Layout
+  shortcuts, so a picker can call them through kglobalaccel `invokeShortcut`): they act on the
+  context (output and its current desktop) of the monitor under the mouse cursor, found as the
+  output whose geometry holds `workspace.cursorPos`, and do nothing if the cursor is on none.
+  The context's layout becomes the named one and every floating managed window in it is tiled
+  (arrival order, as in Float All), all placed once by the new layout. Already tiled windows keep
+  their order, so a fully tiled context is just a layout switch, and an empty one only gets the
+  layout. Arranged windows, unmanaged windows and other contexts are not touched. Monocle raises
+  the active window if it is in that context.
+- `Weave Reload Config`: asks KWin to reconfigure, which makes Weave re-read its settings
+  and re-apply gaps and layouts. Use it after Apply in the settings dialog, which does not
+  emit KWin's config-changed signal by itself (KDE bug 463292). No default key.
+- `Weave Promote`: all tree layouts (master, columns, spiral, monocle, ...) move the active window to the
   first position of the context's order and re-derive the tree (clears the "user edited"
   state); Stage swaps it into the focus slot, as an activation does.
 
@@ -220,7 +291,8 @@ as before. Nothing is moved because of saved state; install the helper with
 `timeout 300 sh script/livetest/livetest.sh` installs a throwaway Weave, runs the kcalc
 scenarios inside the running KWin session and removes the throwaway again. It only
 touches kcalc windows, and writes only the `[Script-weave]` keys `manageClasses`,
-`settleSeconds`, `logLevel`, `defaultMode` and `tileClasses` plus `[Plugins] weaveEnabled`.
+`settleSeconds`, `logLevel`, `defaultMode`, `tileClasses`, `defaultLayout`, `gapInner` and `gapOuter` (both
+set to 8, which the shape checks assume) plus `[Plugins] weaveEnabled`.
 Options: `--dry-run` (prints the plan, including the snapshot and restore steps, runs
 nothing), `--json`, `--takeover`.
 
@@ -268,7 +340,57 @@ qdbus6 org.weave.State /State org.weave.State.Set "$(cat S/state.text)"
 qdbus6 org.kde.KWin /Scripting start
 ```
 
+**S13 (layouts, four windows).** After S12 the harness stops its kcalc windows, drops
+`defaultMode`/`tileClasses` so windows tile again, restarts Weave, opens four kcalc on DP-1
+and, for each of `rows`, `hstack`, `rmaster`, `grid`, `ultrawide`, invokes
+`Weave Layout <Name>`, waits, and runs `check-s13.js` (scenarios `S13a` to `S13e`). The check
+prints the four frame rects to the journal and asserts the shape within 4 px: rows = four
+equal full-width rows; hstack = master on top at 60 % height, three below; rmaster = master
+right, three stacked left; grid = 2x2; ultrawide = centre column, one window left, two
+stacked right. With `WEAVE_LIVETEST_SHOTS=<dir>` set, each layout is also photographed with
+`spectacle -b -n -f -o <dir>/live-<layout>.png` (waits up to 5 s for the file); unset means
+no screenshots. Example:
+`WEAVE_LIVETEST_SHOTS=$HOME/shots timeout 400 sh script/livetest/livetest.sh --takeover`.
+
 Tests: `script/test/livetest.test.js` runs the real harness against stub executables
 (`kreadconfig6`, `kwriteconfig6`, `kpackagetool6`, `qdbus6`, `journalctl`, `kcalc`, ...)
 in a temporary `HOME`; the test hooks are the environment variables
 `WEAVE_LIVETEST_KWINRC` and `WEAVE_LIVETEST_SCRIPTS` (defaults: the real paths).
+
+## Layout picker (`weave-picker`)
+
+A second KWin package that shows an overlay with a card per layout (master, columns,
+monocle, spiral, rows, hstack, rmaster, grid, ultrawide, stage) on the monitor under the
+cursor. Choosing one runs the Weave shortcut `Weave Tile All <Name>`.
+
+Install (builds with `script/build.sh`, which also calls `script/build-picker.sh`):
+
+    sh script/build.sh
+    kpackagetool6 --type=KWin/Script -i script/dist-picker   # -u to update
+    kwriteconfig6 --file kwinrc --group Plugins --key weave-pickerEnabled true
+    qdbus6 org.kde.KWin /KWin reconfigure
+
+Then bind a key to `Weave Layout Picker: Show or hide the layout picker` in System Settings >
+Shortcuts (it has no default key). Weave itself must be loaded.
+
+How it works: the overlay is a frameless, unmanaged window covering the monitor under
+`Workspace.cursorPos`. KWin never gives its own QML windows keyboard focus, so while it is
+open the keys are temporary global shortcuts named `WeavePicker Key ...`: Left/Right/Up/Down
+move the selection, Return chooses it, `1`-`9` and `0` choose a layout directly, Escape
+closes. A click on a card chooses it; a click outside the cards, or on another window,
+closes without change. On choosing, the overlay closes, 50 ms later the Weave shortcut is
+invoked through kglobalaccel (`invokeShortcut` on `/component/kwin`); the cursor is never
+moved, because Weave picks the target monitor from it. The thumbnails come from
+`script/picker/contents/ui/layouts.js`, generated from the core with
+`node core/tools/render-picker-data.js` (checked by a test).
+
+Warning: all temporary shortcuts are unregistered on close and when the script is
+destroyed. If KWin freezes while the picker is open they may be left behind and keep
+swallowing Escape, Return, the arrows and digits. Check with
+`grep WeavePicker ~/.config/kglobalshortcutsrc` and remove leftovers.
+
+Border effects: the overlay window's caption is `Weave Layout Picker overlay`; add it to
+KDE Rounded Corners' exclusions (`[Round-Corners] Exclusions=`) so it gets no outline.
+
+Qt caches a folder's file list and imported JS until logout: after an update (`-u`) toggle
+the script off and on; the data file lives in `contents/ui/lib-<hash>/` for that reason.

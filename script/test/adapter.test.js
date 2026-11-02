@@ -45,6 +45,7 @@ function makeWindow(id, options = {}) {
         dialog: !!options.dialog,
         transientFor: options.transientFor || null,
         output: options.output || 'DP-1',
+        minSize: options.minSize,
         move: false,
         resize: false,
         frameGeometry: geometry,
@@ -182,7 +183,7 @@ test('script is inert by default and every shortcut has an empty default key', (
     const h = harness();
     h.add(makeWindow('a'));
     assert.deepEqual(geometry(h.windows[0]), {x: 0.4, y: 0.2, width: 799.6, height: 600.5});
-    assert.equal(h.shortcuts.size, 46);
+    assert.equal(h.shortcuts.size, 68);
     h.shortcuts.forEach(shortcut => assert.equal(shortcut.key, ''));
 });
 
@@ -957,6 +958,36 @@ const layoutRects = {
         3: [[8, 8, 588, 785], [604, 8, 588, 389], [604, 405, 588, 388]],
         5: [[8, 8, 588, 785], [604, 8, 588, 389], [902, 405, 290, 388], [604, 603, 290, 190],
             [604, 405, 290, 190]]
+    },
+    rows: {
+        1: [[8,8,1184,785]],
+        2: [[8,8,1184,389], [8,405,1184,388]],
+        3: [[8,8,1184,259], [8,275,1184,255], [8,538,1184,255]],
+        5: [[8,8,1184,155], [8,171,1184,154], [8,333,1184,151], [8,492,1184,147], [8,647,1184,146]]
+    },
+    hstack: {
+        1: [[8,8,1184,785]],
+        2: [[8,8,1184,466], [8,482,1184,311]],
+        3: [[8,8,1184,466], [8,482,588,311], [604,482,588,311]],
+        5: [[8,8,1184,466], [8,482,294,311], [310,482,291,311], [609,482,288,311], [905,482,287,311]]
+    },
+    rmaster: {
+        1: [[8,8,1184,785]],
+        2: [[486,8,706,785], [8,8,470,785]],
+        3: [[486,8,706,785], [8,8,470,389], [8,405,470,388]],
+        5: [[486,8,706,785], [8,8,470,194], [8,210,470,192], [8,410,470,188], [8,606,470,187]]
+    },
+    grid: {
+        1: [[8,8,1184,785]],
+        2: [[8,8,588,785], [604,8,588,785]],
+        3: [[8,8,588,389], [604,8,588,389], [8,405,1184,388]],
+        5: [[8,8,392,389], [408,8,388,389], [804,8,388,389], [8,405,588,388], [604,405,588,388]]
+    },
+    ultrawide: {
+        1: [[8,8,1184,785]],
+        2: [[8,8,706,785], [722,8,470,785]],
+        3: [[251,8,700,785], [959,8,233,785], [8,8,235,785]],
+        5: [[251,8,700,785], [959,8,233,389], [8,8,235,389], [959,405,233,388], [8,405,235,388]]
     }
 };
 
@@ -996,23 +1027,24 @@ test('layout shortcuts switch a populated context to the same exact rects', () =
     });
 });
 
-test('layout next and previous cycle master, columns, monocle, spiral, stage', () => {
+test('layout next and previous cycle master, columns, monocle, spiral, rows, hstack, rmaster, grid, ultrawide, stage', () => {
     const h = harness(Object.assign({logLevel: 'info'}, gapped));
     const windows = addWindows(h, 3);
     const seen = [];
-    for (let step = 0; step < 6; step++) {
+    for (let step = 0; step < 11; step++) {
         fireShortcut(h, 'Layout Next', windows[0]);
         seen.push(rectOf(windows[1]));
     }
     assert.deepEqual(seen, [layoutRects.columns[3][1], layoutRects.monocle[3][1],
-        layoutRects.spiral[3][1], stageRects[3][1], layoutRects.master[3][1],
-        layoutRects.columns[3][1]]);
+        layoutRects.spiral[3][1], layoutRects.rows[3][1], layoutRects.hstack[3][1],
+        layoutRects.rmaster[3][1], layoutRects.grid[3][1], layoutRects.ultrawide[3][1],
+        stageRects[3][1], layoutRects.master[3][1], layoutRects.columns[3][1]]);
     fireShortcut(h, 'Layout Previous', windows[0]);
     assert.deepEqual(rectOf(windows[1]), layoutRects.master[3][1]);
     fireShortcut(h, 'Layout Previous', windows[0]);
     assert.deepEqual(rectOf(windows[1]), stageRects[3][1]);
     fireShortcut(h, 'Layout Previous', windows[0]);
-    assert.deepEqual(rectOf(windows[1]), layoutRects.spiral[3][1]);
+    assert.deepEqual(rectOf(windows[1]), layoutRects.ultrawide[3][1]);
 });
 
 test('every layout switch logs "layout <context> -> <name>" at info level', () => {
@@ -1373,7 +1405,7 @@ test('stage gives exact rects for 1, 2, 3, 5, 7 and 13 windows, also through the
         const direct = harness(stageSettings);
         assert.deepEqual(addWindows(direct, count).map(rectOf), stageRects[count],
             'defaultLayout ' + count);
-        const switched = harness(gapped);
+        const switched = harness(Object.assign({maxWindows: 99}, gapped));
         const windows = addWindows(switched, count);
         fireShortcut(switched, 'Layout Stage', windows[0]);
         assert.deepEqual(windows.map(rectOf), stageRects[count], 'shortcut ' + count);
@@ -1720,7 +1752,7 @@ test('keys: shortcut names for the five actions exist with empty default keys', 
     const h = harness();
     ['Move Left', 'Move Right', 'Move Up', 'Move Down', 'Resize Grow Width',
         'Resize Shrink Width', 'Resize Grow Height', 'Resize Shrink Height', 'Master More',
-        'Master Fewer', 'Float All', 'Promote'].forEach(name => {
+        'Master Fewer', 'Float All', 'Reload Config', 'Promote'].forEach(name => {
         assert.ok(h.shortcuts.has('Weave ' + name), name);
         assert.equal(h.shortcuts.get('Weave ' + name).key, '');
     });
@@ -2711,4 +2743,416 @@ test('fill: tiled windows are obstacles and a tiled window ignores Fill', () => 
     assert.equal(totalWrites(windows), afterFloat);
     assert.deepEqual([rectOf(a), rectOf(b), rectOf(c)],
         [[8, 8, 706, 785], [722, 8, 470, 389], [722, 8, 470, 785]]);
+});
+
+// ---- Tile All <Layout> ----
+
+const twoScreens = [
+    {name: 'DP-1', geometry: {x: 0, y: 0, width: 1200, height: 800}},
+    {name: 'DP-2', geometry: {x: 1200, y: 0, width: 1200, height: 800}}
+];
+const floatSettings = Object.assign({defaultMode: 'float'}, gapped);
+
+function floatingWindows(h, count, options, prefix = 'w') {
+    const made = [];
+    for (let index = 0; index < count; index++) {
+        const window = makeWindow(prefix + index, options);
+        h.add(window);
+        window.frameGeometry = {x: 100, y: 100, width: 300, height: 200};
+        made.push(window);
+    }
+    return made;
+}
+
+test('Tile All registers one shortcut per layout, named like the Layout ones', () => {
+    const h = harness(gapped, {screens: twoScreens});
+    ['Master', 'Columns', 'Monocle', 'Spiral', 'Rows', 'Hstack', 'Rmaster', 'Grid',
+        'Ultrawide', 'Stage'].forEach(name => {
+        assert.ok(h.shortcuts.has('Weave Tile All ' + name), name);
+        assert.ok(h.shortcuts.has('Weave Layout ' + name), name);
+    });
+});
+
+test('Tile All tiles the floating windows of the cursor monitor with the layout', () => {
+    ['columns', 'master'].forEach(name => {
+        const h = harness(floatSettings, {screens: twoScreens});
+        const windows = floatingWindows(h, 3);
+        h.workspace.cursorPos = {x: 50, y: 50};
+        h.shortcuts.get('Weave Tile All ' + name[0].toUpperCase() + name.slice(1)).handler();
+        assert.deepEqual(windows.map(rectOf), layoutRects[name][3], name);
+    });
+});
+
+test('Tile All on a fully tiled context is just a layout switch', () => {
+    const h = harness(gapped, {screens: twoScreens});
+    const windows = addWindows(h, 3);
+    const writes = windows.map(window => window.geometryWrites);
+    h.workspace.cursorPos = {x: 50, y: 50};
+    h.shortcuts.get('Weave Tile All Columns').handler();
+    assert.deepEqual(windows.map(rectOf), layoutRects.columns[3]);
+    assert.ok(windows.every((window, index) => window.geometryWrites === writes[index] + 1));
+});
+
+test('Tile All Stage enters stage with floating windows and syncs an existing stage', () => {
+    const h = harness(floatSettings, {screens: twoScreens});
+    const windows = floatingWindows(h, 3);
+    h.workspace.cursorPos = {x: 50, y: 50};
+    h.shortcuts.get('Weave Tile All Stage').handler();
+    assert.deepEqual(windows.map(rectOf), stageRects[3]);
+    const late = makeWindow('late');
+    h.add(late);
+    late.frameGeometry = {x: 100, y: 100, width: 300, height: 200};
+    h.shortcuts.get('Weave Tile All Stage').handler();
+    assert.deepEqual(windows.concat(late).map(rectOf).slice(0, 3), stageRects[3]);
+    assert.equal(late.frameGeometry.width < 300 || late.frameGeometry.x !== 100, true);
+});
+
+test('Tile All Monocle raises the active window', () => {
+    const h = harness(floatSettings, {screens: twoScreens});
+    const windows = floatingWindows(h, 2);
+    h.activate(windows[1]);
+    h.workspace.cursorPos = {x: 50, y: 50};
+    h.shortcuts.get('Weave Tile All Monocle').handler();
+    assert.deepEqual(windows.map(rectOf), [[8, 8, 1184, 785], [8, 8, 1184, 785]]);
+    assert.deepEqual(h.workspace.raised, ['w1']);
+});
+
+test('Tile All with no windows only sets the layout of the context', () => {
+    const h = harness(gapped, {screens: twoScreens});
+    h.workspace.cursorPos = {x: 50, y: 50};
+    h.shortcuts.get('Weave Tile All Columns').handler();
+    assert.deepEqual(addWindows(h, 3).map(rectOf), layoutRects.columns[3]);
+});
+
+test('Tile All leaves arranged windows alone', () => {
+    const h = harness(gapped, {screens: twoScreens});
+    const windows = activatedWindows(h, 3);
+    fireShortcut(h, 'Arrange Next', windows[2]);
+    const before = windows.map(rectOf);
+    h.workspace.cursorPos = {x: 50, y: 50};
+    h.shortcuts.get('Weave Tile All Columns').handler();
+    assert.deepEqual(windows.map(rectOf), before);
+});
+
+test('Tile All leaves the other monitor and unmanaged windows alone', () => {
+    const h = harness(floatSettings, {screens: twoScreens});
+    const near = floatingWindows(h, 2);
+    const far = floatingWindows(h, 2, {output: 'DP-2'}, 'far');
+    const plain = makeWindow('plain', {resourceClass: 'other'});
+    h.add(plain);
+    const farBefore = far.map(rectOf);
+    const plainBefore = rectOf(plain);
+    h.workspace.cursorPos = {x: 50, y: 50};
+    h.shortcuts.get('Weave Tile All Columns').handler();
+    assert.deepEqual(near.map(rectOf), layoutRects.columns[2]);
+    assert.deepEqual(far.map(rectOf), farBefore);
+    assert.deepEqual(rectOf(plain), plainBefore);
+});
+
+test('Tile All picks the monitor under the cursor, and does nothing outside every monitor', () => {
+    const h = harness(floatSettings, {screens: twoScreens});
+    const near = floatingWindows(h, 2);
+    const far = floatingWindows(h, 2, {output: 'DP-2'}, 'far');
+    const nearBefore = near.map(rectOf);
+    const farBefore = far.map(rectOf);
+    h.workspace.cursorPos = {x: 5000, y: 50};
+    h.shortcuts.get('Weave Tile All Columns').handler();
+    assert.deepEqual(near.map(rectOf), nearBefore);
+    assert.deepEqual(far.map(rectOf), farBefore);
+    h.workspace.cursorPos = {x: 1300, y: 50};
+    h.shortcuts.get('Weave Tile All Columns').handler();
+    assert.deepEqual(far.map(rectOf), layoutRects.columns[2]);
+    assert.deepEqual(near.map(rectOf), nearBefore);
+});
+
+// ---- Window limits and fit ----
+const FLOAT_RECT = [0, 0, 800, 601];
+const infoGapped = Object.assign({logLevel: 'info'}, gapped);
+
+test('a window arriving over the layout limit floats, the others keep their cells', () => {
+    const h = harness(Object.assign({defaultLayout: 'rows'}, infoGapped));
+    const windows = addWindows(h, 6);
+    assert.deepEqual(windows.slice(0, 5).map(rectOf), layoutRects.rows[5]);
+    assert.deepEqual(rectOf(windows[5]), FLOAT_RECT);
+    assert.ok(h.logs.includes('weave overlimit w5 rows'));
+});
+
+test('switching to a layout with a lower limit floats the newest extras', () => {
+    const h = harness(infoGapped);
+    const windows = addWindows(h, 8);
+    fireShortcut(h, 'Layout Columns', windows[0]);
+    assert.ok(h.logs.includes('weave overlimit w7 columns'));
+    assert.ok(h.logs.includes('weave overlimit w6 columns'));
+    assert.deepEqual(windows.slice(0, 6).map(window => rectOf(window)[1]), Array(6).fill(8));
+    assert.deepEqual(rectOf(windows[6]), FLOAT_RECT);
+    assert.deepEqual(rectOf(windows[7]), FLOAT_RECT);
+});
+
+test('closing a tiled window re-tiles the oldest autoFloated one', () => {
+    const h = harness(Object.assign({defaultLayout: 'rows'}, gapped));
+    const windows = addWindows(h, 7);
+    assert.deepEqual(rectOf(windows[5]), FLOAT_RECT);
+    h.remove(windows[0]);
+    const tiled = windows.slice(1, 6);
+    assert.deepEqual(tiled.map(rectOf), layoutRects.rows[5]);
+    assert.deepEqual(rectOf(windows[6]), FLOAT_RECT);
+});
+
+test('an overlimit window re-tiles when switching to a layout with a higher limit', () => {
+    const h = harness(Object.assign({defaultLayout: 'rows'}, gapped));
+    const windows = addWindows(h, 6);
+    assert.deepEqual(rectOf(windows[5]), FLOAT_RECT);
+    fireShortcut(h, 'Layout Grid', windows[0]);
+    windows.forEach(window => assert.notDeepEqual(rectOf(window), FLOAT_RECT));
+    fireShortcut(h, 'Layout Rows', windows[0]);
+    assert.deepEqual(windows.slice(0, 5).map(rectOf), layoutRects.rows[5]);
+    assert.deepEqual(rectOf(windows[5]), FLOAT_RECT);
+});
+
+test('a no-fit window re-tiles when the new layout gives it enough room', () => {
+    const h = harness(Object.assign({defaultLayout: 'rows'}, infoGapped));
+    const tall = {minSize: {width: 250, height: 341}};
+    const windows = [makeWindow('w0'), makeWindow('w1', tall), makeWindow('w2')];
+    windows.forEach(window => h.add(window));
+    assert.deepEqual(rectOf(windows[1]), FLOAT_RECT);
+    fireShortcut(h, 'Layout Grid', windows[0]);
+    windows.forEach(window => assert.notDeepEqual(rectOf(window), FLOAT_RECT));
+    assert.ok(rectOf(windows[1])[3] >= 341);
+});
+
+test('a user-floated window stays floating across layout switches', () => {
+    const h = harness(gapped);
+    const windows = addWindows(h, 3);
+    fireShortcut(h, 'Toggle Float', windows[1]);
+    const rect = rectOf(windows[1]);
+    fireShortcut(h, 'Layout Grid', windows[0]);
+    fireShortcut(h, 'Layout Columns', windows[0]);
+    assert.deepEqual(rectOf(windows[1]), rect);
+    assert.deepEqual(windows.filter((window, index) => index !== 1).map(rectOf),
+        layoutRects.columns[2]);
+});
+
+test('toggling an autoFloated window to tiled clears its flag', () => {
+    const h = harness(Object.assign({defaultLayout: 'rows'}, gapped));
+    const windows = addWindows(h, 6);
+    fireShortcut(h, 'Toggle Float', windows[5]);
+    assert.notDeepEqual(rectOf(windows[5]), FLOAT_RECT);
+    // now the window is tiled by the user; toggling it float makes it user-floated
+    fireShortcut(h, 'Toggle Float', windows[5]);
+    const rect = rectOf(windows[5]);
+    fireShortcut(h, 'Layout Grid', windows[0]);
+    assert.deepEqual(rectOf(windows[5]), rect);
+});
+
+test('Tile All tiles up to the limit and leaves the rest floating', () => {
+    const h = harness(floatSettings, {screens: twoScreens});
+    const windows = floatingWindows(h, 7);
+    h.workspace.cursorPos = {x: 50, y: 50};
+    h.shortcuts.get('Weave Tile All Rows').handler();
+    assert.deepEqual(windows.slice(0, 5).map(rectOf), layoutRects.rows[5]);
+    windows.slice(5).forEach(window => {
+        assert.deepEqual(rectOf(window), [100, 100, 300, 200]);
+    });
+});
+
+test('a window whose cell is below its minSize floats', () => {
+    const h = harness(Object.assign({defaultLayout: 'rows'}, infoGapped));
+    const windows = [makeWindow('w0'), makeWindow('w1', {minSize: {width: 250, height: 341}}),
+        makeWindow('w2')];
+    windows.forEach(window => h.add(window));
+    assert.ok(h.logs.includes('weave nofit w1 rows'));
+    assert.deepEqual(rectOf(windows[0]), layoutRects.rows[2][0]);
+    assert.deepEqual(rectOf(windows[2]), layoutRects.rows[2][1]);
+    assert.deepEqual(rectOf(windows[1]), FLOAT_RECT);
+});
+
+test('a missing or invalid minSize counts as zero', () => {
+    const h = harness(Object.assign({defaultLayout: 'rows'}, gapped));
+    const windows = [makeWindow('w0', {minSize: {}}), makeWindow('w1', {minSize: null}),
+        makeWindow('w2')];
+    windows.forEach(window => h.add(window));
+    assert.deepEqual(windows.map(rectOf), layoutRects.rows[3]);
+});
+
+test('the active window is never floated by limit or fit', () => {
+    const h = harness(Object.assign({defaultLayout: 'rows'}, infoGapped));
+    const big = {minSize: {width: 250, height: 341}};
+    const windows = [makeWindow('w0', big), makeWindow('w1', big), makeWindow('w2', big)];
+    windows.forEach(window => {
+        h.workspace.activeWindow = window;
+        h.add(window);
+    });
+    assert.ok(h.logs.includes('weave nofit w1 rows'));
+    assert.deepEqual(rectOf(windows[0]), layoutRects.rows[2][0]);
+    assert.deepEqual(rectOf(windows[2]), layoutRects.rows[2][1]);
+    assert.deepEqual(rectOf(windows[1]), FLOAT_RECT);
+    const limit = harness(Object.assign({defaultLayout: 'rows'}, gapped));
+    const six = addWindows(limit, 5);
+    const last = makeWindow('w5');
+    limit.workspace.activeWindow = last;
+    limit.add(last);
+    assert.equal(rectOf(last)[0], 8);
+    assert.deepEqual(rectOf(six[4]), FLOAT_RECT);
+});
+
+test('the maxWindows setting overrides the layout default, except for monocle', () => {
+    const h = harness(Object.assign({maxWindows: 3}, gapped));
+    const windows = addWindows(h, 5);
+    assert.deepEqual(windows.slice(0, 3).map(rectOf), layoutRects.master[3]);
+    assert.deepEqual(rectOf(windows[3]), FLOAT_RECT);
+    assert.deepEqual(rectOf(windows[4]), FLOAT_RECT);
+    const mono = harness(Object.assign({maxWindows: 2, defaultLayout: 'monocle'}, gapped));
+    const all = addWindows(mono, 5);
+    all.forEach(window => assert.deepEqual(rectOf(window), [8, 8, 1184, 785]));
+});
+
+test('maxWindows is picked up by a configuration refresh', () => {
+    const h = harness(gapped);
+    const windows = addWindows(h, 5);
+    h.settings.maxWindows = 2;
+    h.changed.emit();
+    assert.deepEqual(windows.slice(0, 2).map(rectOf), layoutRects.master[2]);
+    assert.deepEqual(rectOf(windows[4]), FLOAT_RECT);
+});
+
+// ---- Focus keys ----
+
+function activeId(h) {
+    return h.workspace.activeWindow ? h.workspace.activeWindow.internalId : null;
+}
+
+test('focus: shortcut names exist with empty default keys', () => {
+    const h = harness();
+    ['Left', 'Right', 'Up', 'Down', 'Next', 'Previous'].forEach(name => {
+        assert.ok(h.shortcuts.has('Weave Focus ' + name), name);
+        assert.equal(h.shortcuts.get('Weave Focus ' + name).key, '');
+    });
+});
+
+test('focus: next and previous follow the layout order and wrap in master', () => {
+    const {h, windows} = setup(3);
+    const ids = windows.map(window => window.internalId);
+    fire(h, 'Focus Next', windows[0]);
+    assert.equal(activeId(h), ids[1]);
+    fire(h, 'Focus Next', windows[1]);
+    assert.equal(activeId(h), ids[2]);
+    fire(h, 'Focus Next', windows[2]);
+    assert.equal(activeId(h), ids[0]);
+    fire(h, 'Focus Previous', windows[0]);
+    assert.equal(activeId(h), ids[2]);
+    fire(h, 'Focus Previous', windows[2]);
+    assert.equal(activeId(h), ids[1]);
+    assert.deepEqual(h.workspace.raised, []);
+});
+
+test('focus: next follows the layout order after a promote, not the arrival order', () => {
+    const {h, windows} = setup(3);
+    fire(h, 'Promote', windows[2]);
+    fire(h, 'Focus Next', windows[2]);
+    assert.equal(activeId(h), 'w0');
+});
+
+test('focus: next and previous wrap in monocle and raise the window', () => {
+    const {h, windows} = setup(3, 'monocle');
+    fire(h, 'Focus Next', windows[2]);
+    assert.equal(activeId(h), 'w0');
+    fire(h, 'Focus Previous', windows[0]);
+    assert.equal(activeId(h), 'w2');
+    fire(h, 'Focus Next', windows[0]);
+    assert.equal(activeId(h), 'w1');
+    assert.deepEqual(h.workspace.raised, ['w0', 'w2', 'w1']);
+});
+
+test('focus: directional keys pick the nearest window in a master layout', () => {
+    const {h, windows} = setup(3);
+    const [a, b, c] = windows;
+    fire(h, 'Focus Right', a);
+    assert.equal(activeId(h), 'w1');
+    fire(h, 'Focus Down', b);
+    assert.equal(activeId(h), 'w2');
+    fire(h, 'Focus Left', c);
+    assert.equal(activeId(h), 'w0');
+    fire(h, 'Focus Right', c);
+    assert.equal(activeId(h), 'w2');
+    fire(h, 'Focus Up', c);
+    assert.equal(activeId(h), 'w1');
+    assert.equal(a.geometryWrites > 0, true);
+});
+
+test('focus: directional keys stop at the edge and write nothing', () => {
+    const {h, windows} = setup(3);
+    const [a, b, c] = windows;
+    [[a, 'Left', 'w0'], [a, 'Up', 'w0'], [a, 'Down', 'w0'], [b, 'Right', 'w1'],
+        [b, 'Up', 'w1'], [c, 'Down', 'w2'], [c, 'Right', 'w2']].forEach(item => {
+        assertNoWrites(windows, () => fire(h, 'Focus ' + item[1], item[0]));
+        assert.equal(activeId(h), item[2]);
+    });
+});
+
+test('focus: in monocle the directional keys fall back to previous and next', () => {
+    const {h, windows} = setup(3, 'monocle');
+    fire(h, 'Focus Right', windows[0]);
+    assert.equal(activeId(h), 'w1');
+    fire(h, 'Focus Down', windows[1]);
+    assert.equal(activeId(h), 'w2');
+    fire(h, 'Focus Left', windows[2]);
+    assert.equal(activeId(h), 'w1');
+    fire(h, 'Focus Up', windows[0]);
+    assert.equal(activeId(h), 'w2');
+    fire(h, 'Focus Right', windows[2]);
+    assert.equal(activeId(h), 'w0');
+});
+
+test('focus: floating and minimized windows are skipped', () => {
+    const {h, windows} = setup(3);
+    fire(h, 'Toggle Float', windows[1]);
+    fire(h, 'Focus Next', windows[0]);
+    assert.equal(activeId(h), 'w2');
+    fire(h, 'Focus Previous', windows[2]);
+    assert.equal(activeId(h), 'w0');
+    windows[2].minimized = true;
+    fire(h, 'Focus Next', windows[0]);
+    assert.equal(activeId(h), 'w0');
+});
+
+test('focus: windows of the other monitor are not candidates', () => {
+    const h = harness(gappedWith(), {screens: twoScreens});
+    const left = addWindows(h, 2);
+    const other = makeWindow('x', {output: twoScreens[1]});
+    h.add(other);
+    fire(h, 'Focus Next', left[1]);
+    assert.equal(activeId(h), 'w0');
+    fire(h, 'Focus Next', other);
+    assert.equal(activeId(h), 'x');
+    fire(h, 'Focus Right', left[1]);
+    assert.equal(activeId(h), 'w1');
+});
+
+test('focus: without an active managed window the cursor monitor is used', () => {
+    const h = harness(gappedWith(), {screens: twoScreens});
+    const first = addWindows(h, 2);
+    const second = [makeWindow('x', {output: twoScreens[1]}),
+        makeWindow('y', {output: twoScreens[1]})];
+    second.forEach(window => h.add(window));
+    h.workspace.cursorPos = {x: 1300, y: 50};
+    h.workspace.activeWindow = null;
+    h.shortcuts.get('Weave Focus Left').handler();
+    assert.equal(activeId(h), 'x');
+    h.workspace.activeWindow = makeWindow('unmanaged', {resourceClass: 'other'});
+    h.workspace.cursorPos = {x: 50, y: 50};
+    h.shortcuts.get('Weave Focus Next').handler();
+    assert.equal(activeId(h), first[0].internalId);
+    h.workspace.activeWindow = null;
+    h.workspace.cursorPos = {x: 5000, y: 50};
+    h.shortcuts.get('Weave Focus Next').handler();
+    assert.equal(h.workspace.activeWindow, null);
+});
+
+test('focus: stage cycles its order and the overflow stack falls back to cycling', () => {
+    const {h, windows} = setup(3, 'stage');
+    fire(h, 'Focus Next', windows[0]);
+    assert.equal(activeId(h), 'w1');
+    fire(h, 'Focus Previous', windows[0]);
+    assert.equal(activeId(h), 'w2');
+    assert.equal(windows.length, 3);
 });

@@ -692,10 +692,10 @@ test('the harness changes the Script-weave section only through guarded helpers'
             assert.match(line, /^kw_(set|del)\(\) \{ run kwriteconfig6/, 'line ' + (index + 1));
         }
     });
-    assert.match(source, /HARNESS_KEYS="manageClasses settleSeconds logLevel defaultMode tileClasses"/);
+    assert.match(source, /HARNESS_KEYS="manageClasses settleSeconds logLevel defaultMode tileClasses defaultLayout gapInner gapOuter"/);
     // every cfg_set/cfg_del user passes a literal harness key or iterates over the list
     (source.match(/\bcfg_(set|del) ([A-Za-z$"]+)/g) || []).forEach(call => {
-        assert.match(call, /cfg_(set|del) (manageClasses|settleSeconds|logLevel|defaultMode|tileClasses|"\$key")/);
+        assert.match(call, /cfg_(set|del) (manageClasses|settleSeconds|logLevel|defaultMode|tileClasses|defaultLayout|gapInner|gapOuter|"\$key")/);
     });
     assert.match(source, /uninstall_throwaway\(\)[\s\S]*PKG_TOUCHED[\s\S]*ENABLED_TOUCHED/);
 });
@@ -713,6 +713,59 @@ test('--takeover and exit code 3 are documented', () => {
         'org.weave.State.Set', 'Live install'].forEach(word =>
         assert.ok(readme.includes(word), word));
     assert.match(harnessSource(), /Usage: livetest\.sh \[--dry-run\] \[--json\] \[--takeover\]/);
+});
+
+// S13: the newer layouts with four tiled windows; the shapes are compared with the core.
+function runS13(layout, id, rects) {
+    const windows = rects.map((rect, index) => ({
+        resourceClass: expected.resourceClass, internalId: '{w' + index + '}', desktop: 1,
+        output: {name: 'DP-1'}, frameGeometry: Object.assign({}, rect)
+    }));
+    const lines = [];
+    expected.output = line => lines.push(line);
+    vm.runInNewContext(fs.readFileSync(path.resolve(__dirname,
+        '../livetest/js/check-s13.js'), 'utf8'), {
+        Weave: core, KWin: {PlacementArea: 0}, JSON, Math, String, Object,
+        s13Layout: layout, s13Scenario: id,
+        KCALC_RESOURCE_CLASS: expected.resourceClass,
+        workspace: {screens: [{name: 'DP-1'}], windowList: () => windows,
+            clientArea: () => dpArea}
+    });
+    expected.output = null;
+    return JSON.parse(lines[0].slice('WEAVE_LIVE '.length));
+}
+
+test('S13a to S13e accept the core shapes for four windows and reject a moved one', () => {
+    const ids = ['a', 'b', 'c', 'd'];
+    [['rows', 'S13a'], ['hstack', 'S13b'], ['rmaster', 'S13c'], ['grid', 'S13d'],
+        ['ultrawide', 'S13e']].forEach(([layout, id]) => {
+        const mins = {};
+        ids.forEach(key => { mins[key] = {width: 0, height: 341}; });
+        const fitted = core.fit(ids, mins, dpArea, {outer: 8, inner: 8}, layout,
+            {masterRatio: 0.6, arrival: ids});
+        const placed = core.tree.layout(core.tree.generate(layout, fitted.tiled.slice(),
+            {masterRatio: 0.6}), dpArea, {outer: 8, inner: 8});
+        const rects = ids.map(key => placed[key] ? expected.rounded(placed[key]) :
+            {x: 100, y: 100, width: 300, height: 341});
+        const result = runS13(layout, id, rects);
+        assert.equal(result.status, 'PASS', layout);
+        assert.equal(result.actual.length, 4, layout);
+        const off = rects.map((rect, index) => index ? rect : Object.assign({}, rect,
+            {x: rect.x + 9}));
+        assert.equal(runS13(layout, id, off).status, 'FAIL', layout + ' moved');
+        assert.equal(runS13(layout, id, rects.slice(0, 3)).status, 'FAIL', layout + ' count');
+    });
+});
+
+test('the harness runs S13 with the layout keys and an optional spectacle screenshot', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../livetest/livetest.sh'), 'utf8');
+    assert.match(source, /S13a S13b S13c S13d S13e/);
+    ['Rows', 'Hstack', 'Rmaster', 'Grid', 'Ultrawide'].forEach(name =>
+        assert.ok(source.includes(':' + name), name));
+    assert.ok(source.includes('invoke "Weave Layout $s13_label"'));
+    assert.ok(source.includes('WEAVE_LIVETEST_SHOTS'));
+    assert.ok(source.includes('spectacle -b -n -f -o'));
+    assert.ok(source.includes('check-s13.js'));
 });
 
 // ---- behavioural tests against stub executables -------------------------------------
@@ -1021,7 +1074,7 @@ test('without a live install the throwaway is installed, then removed as before'
         assert.equal(fs.existsSync(path.join(world.stateHome, 'weave-livetest')), false);
         result.calls.filter(call => /^kwriteconfig6 /.test(call)).forEach(call => {
             if (/--group Script-weave/.test(call)) {
-                assert.match(call, /--key (manageClasses|settleSeconds|logLevel|defaultMode|tileClasses)\b/);
+                assert.match(call, /--key (manageClasses|settleSeconds|logLevel|defaultMode|tileClasses|defaultLayout|gapInner|gapOuter)\b/);
             } else {
                 assert.match(call, /--group Plugins --key weaveEnabled/);
             }

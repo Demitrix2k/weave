@@ -146,3 +146,49 @@ test('focusRatioAfterGrow turns pixels into a ratio step of the available width'
     assert.ok(Math.abs(ratio - (0.5 + 100 / 980)) < 1e-12);
     assert.equal(stage.focusRatioAfterGrow({x: 0, y: 0, width: 0, height: 5}, gaps, 0.5, 1), null);
 });
+
+test('focusTarget moves between the cells of a 2x2 grid in all four directions', () => {
+    const r = {
+        a: {x: 0, y: 0, width: 100, height: 100}, b: {x: 110, y: 0, width: 100, height: 100},
+        c: {x: 0, y: 110, width: 100, height: 100}, d: {x: 110, y: 110, width: 100, height: 100}
+    };
+    assert.equal(geometry.focusTarget(r, 'a', 'right'), 'b');
+    assert.equal(geometry.focusTarget(r, 'a', 'down'), 'c');
+    assert.equal(geometry.focusTarget(r, 'd', 'left'), 'c');
+    assert.equal(geometry.focusTarget(r, 'd', 'up'), 'b');
+    assert.equal(geometry.focusTarget(r, 'b', 'down'), 'd');
+    assert.equal(geometry.focusTarget(r, 'c', 'up'), 'a');
+});
+
+test('focusTarget in master plus stack prefers the lined-up window and stops at edges', () => {
+    const r = tree.layout(t, area, gaps);
+    assert.equal(geometry.focusTarget(r, 'a', 'right'), 'b');
+    assert.equal(geometry.focusTarget(r, 'c', 'left'), 'a');
+    assert.equal(geometry.focusTarget(r, 'b', 'down'), 'c');
+    assert.equal(geometry.focusTarget(r, 'c', 'up'), 'b');
+    assert.equal(geometry.focusTarget(r, 'a', 'left'), null);
+    assert.equal(geometry.focusTarget(r, 'a', 'up'), null);
+    assert.equal(geometry.focusTarget(r, 'a', 'down'), null);
+    assert.equal(geometry.focusTarget(r, 'b', 'right'), null);
+    assert.equal(geometry.focusTarget(r, 'b', 'up'), null);
+    assert.equal(geometry.focusTarget(r, 'c', 'down'), null);
+    assert.equal(geometry.focusTarget(r, 'missing', 'left'), null);
+});
+
+test('focusTarget up and down need shared width', () => {
+    const r = {
+        a: {x: 0, y: 100, width: 100, height: 100}, b: {x: 100, y: 0, width: 100, height: 100}
+    };
+    assert.equal(geometry.focusTarget(r, 'a', 'up'), null);
+});
+
+test('focusTarget returns null for identical rectangles and sharesRect detects them', () => {
+    const same = {x: 0, y: 0, width: 100, height: 100};
+    const r = {a: same, b: Object.assign({}, same), c: {x: 0, y: 0, width: 100, height: 103}};
+    ['left', 'right', 'up', 'down'].forEach(side =>
+        assert.equal(geometry.focusTarget({a: same, b: r.b}, 'a', side), null));
+    assert.equal(geometry.sharesRect({a: same, b: r.b}, 'a', 4), true);
+    assert.equal(geometry.sharesRect({a: same, c: r.c}, 'a', 4), true);
+    assert.equal(geometry.sharesRect({a: same, c: r.c}, 'a', 2), false);
+    assert.equal(geometry.sharesRect(tree.layout(t, area, gaps), 'a', 4), false);
+});

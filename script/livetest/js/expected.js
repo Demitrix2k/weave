@@ -213,7 +213,8 @@ var KCALC_RESOURCE_CLASS = "org.kde.kcalc";
         });
     }
 
-    function layoutRects(name, ids, area) {
+    function layoutRects(name, ids, area, engine) {
+        coreApi = engine || coreApi || (typeof Weave !== "undefined" ? Weave : null);
         var tree = coreApi.tree.generate(name, ids.slice(), {masterRatio: 0.6});
         var rects = coreApi.tree.layout(tree, area, GAPS);
         return ids.map(function (id) { return rounded(rects[id]); });
@@ -671,6 +672,7 @@ var KCALC_RESOURCE_CLASS = "org.kde.kcalc";
         rectArray: rectArray,
         workArea: workArea,
         tile: tile,
+        layoutRects: layoutRects,
         actual: actual,
         emit: emit,
         kcalcWindows: kcalcWindows,
