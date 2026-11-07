@@ -680,7 +680,9 @@
         });
     }
 
-    function addWindow(window) {
+    var fullscreenRecords = new Map();
+
+    function addWindow(window, restored) {
         if (observing) {
             recordCandidate(window, true);
             return;
@@ -689,8 +691,8 @@
         var id = windowId(window);
         if (id === null || states.has(id)) { return; }
         var context = contextFor(window);
-        var mode = arrivalMode(window);
-        var state = newState(window, context, mode, null);
+        var mode = restored ? restored.mode : arrivalMode(window);
+        var state = newState(window, context, mode, restored || null);
         states.set(id, state);
         if (mode === "tiled") { joinTiling(context, id); }
         watchWindow(state);
@@ -827,8 +829,17 @@
             applyContext(state.context);
         });
         connect(window, "fullScreenChanged", function () {
-            if (property(window, "fullScreen")) { removeWindow(window); }
-            else { addWindow(window); }
+            var id = windowId(window);
+            if (property(window, "fullScreen")) {
+                // remember tiled/float so leaving fullscreen restores it
+                var current = id === null ? null : states.get(id);
+                if (current) { fullscreenRecords.set(id, recordFor(current)); }
+                removeWindow(window);
+            } else {
+                var restored = id === null ? null : fullscreenRecords.get(id);
+                fullscreenRecords.delete(id);
+                addWindow(window, restored);
+            }
         });
     }
 
