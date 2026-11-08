@@ -41,13 +41,30 @@
      <property name="title"><string>Behavior</string></property>
      <layout class="QFormLayout" name="behaviorLayout">
       <item row="0" column="0"><widget class="QLabel" name="defaultLayoutLabel"><property name="text"><string>Default layout:</string></property></widget></item>
-      <item row="0" column="1"><widget class="QComboBox" name="kcfg_defaultLayout"><item><property name="text"><string>master</string></property></item><item><property name="text"><string>columns</string></property></item><item><property name="text"><string>monocle</string></property></item><item><property name="text"><string>spiral</string></property></item><item><property name="text"><string>stage</string></property></item><item><property name="text"><string>rows</string></property></item><item><property name="text"><string>hstack</string></property></item><item><property name="text"><string>rmaster</string></property></item><item><property name="text"><string>grid</string></property></item><item><property name="text"><string>ultrawide</string></property></item></widget></item>
+      <item row="0" column="1"><widget class="QComboBox" name="kcfg_defaultLayout"><item><property name="text"><string>master</string></property></item><item><property name="text"><string>columns</string></property></item><item><property name="text"><string>monocle</string></property></item><item><property name="text"><string>spiral</string></property></item><item><property name="text"><string>stage</string></property></item><item><property name="text"><string>rows</string></property></item><item><property name="text"><string>hstack</string></property></item><item><property name="text"><string>rmaster</string></property></item><item><property name="text"><string>grid</string></property></item><item><property name="text"><string>ultrawide</string></property></item><item><property name="text"><string>scroll</string></property></item></widget></item>
       <item row="1" column="0"><widget class="QLabel" name="settleSecondsLabel"><property name="text"><string>Startup settle time:</string></property><property name="toolTip"><string>Wait this many seconds after the last window appears before adopting the session.</string></property></widget></item>
       <item row="1" column="1"><widget class="QSpinBox" name="kcfg_settleSeconds"><property name="suffix"><string> s</string></property><property name="maximum"><number>60</number></property></widget></item>
       <item row="2" column="0" colspan="2"><widget class="QCheckBox" name="kcfg_dropNativeTiles"><property name="text"><string>Remove KWin native tiles from managed windows</string></property></widget></item>
       <item row="3" column="0" colspan="2"><widget class="QCheckBox" name="kcfg_persist"><property name="text"><string>Remember window modes and layouts across restarts</string></property></widget></item>
       <item row="4" column="0"><widget class="QLabel" name="logLevelLabel"><property name="text"><string>Log level:</string></property></widget></item>
       <item row="4" column="1"><widget class="QComboBox" name="kcfg_logLevel"><item><property name="text"><string>off</string></property></item><item><property name="text"><string>info</string></property></item><item><property name="text"><string>debug</string></property></item></widget></item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="scrollGroup">
+     <property name="title"><string>Scroll (Pages)</string></property>
+     <layout class="QFormLayout" name="scrollLayout">
+      <item row="0" column="0"><widget class="QLabel" name="scrollAxisLabel"><property name="text"><string>Axis:</string></property></widget></item>
+      <item row="0" column="1"><widget class="QComboBox" name="kcfg_scrollAxis"><item><property name="text"><string>h</string></property></item><item><property name="text"><string>v</string></property></item></widget></item>
+      <item row="1" column="0"><widget class="QLabel" name="scrollVisibleLabel"><property name="text"><string>Windows per page:</string></property></widget></item>
+      <item row="1" column="1"><widget class="QSpinBox" name="kcfg_scrollVisible"><property name="minimum"><number>1</number></property><property name="maximum"><number>20</number></property></widget></item>
+      <item row="2" column="0"><widget class="QLabel" name="scrollStepLabel"><property name="text"><string>Scroll step:</string></property></widget></item>
+      <item row="2" column="1"><widget class="QComboBox" name="kcfg_scrollStep"><item><property name="text"><string>page</string></property></item><item><property name="text"><string>window</string></property></item><item><property name="text"><string>slot</string></property></item></widget></item>
+      <item row="3" column="0"><widget class="QLabel" name="scrollBoxWidthLabel"><property name="text"><string>Box width:</string></property></widget></item>
+      <item row="3" column="1"><widget class="QSpinBox" name="kcfg_scrollBoxWidth"><property name="suffix"><string> %</string></property><property name="minimum"><number>30</number></property><property name="maximum"><number>100</number></property></widget></item>
+      <item row="4" column="0"><widget class="QLabel" name="scrollBoxHeightLabel"><property name="text"><string>Box height:</string></property></widget></item>
+      <item row="4" column="1"><widget class="QSpinBox" name="kcfg_scrollBoxHeight"><property name="suffix"><string> %</string></property><property name="minimum"><number>30</number></property><property name="maximum"><number>100</number></property></widget></item>
      </layout>
     </widget>
    </item>

@@ -28,6 +28,7 @@
     var STAGE_GRADIENT = 0.5;
     var STAGE_RAIL_MIN = {w: 140, h: 110};
     var ownActivation = null;
+    var parkingDepth = 0;
     var templates = typeof WEAVE_TEMPLATES === "undefined" ? {} : WEAVE_TEMPLATES;
     var activation = new Map();
     var activationTick = 0;
@@ -111,6 +112,8 @@
                 innerGap: null,
                 layout: config.defaultLayout,
                 stage: null,
+                scroll: null,
+                scrollRatio: 0.5,
                 focusRatio: null,
                 nMaster: 1,
                 groups: []
@@ -168,15 +171,23 @@
             masterRatio: Number(readConfigValue("masterRatio", 0.6)),
             focusRatio: Number(readConfigValue("focusRatio", 0.6)),
             resizeStep: Number(readConfigValue("resizeStep", 76)),
+            scrollAxis: choiceValue(readConfigValue("scrollAxis", "h"), ["h", "v"], "h"),
+            scrollVisible: Math.max(1, Math.floor(Number(readConfigValue("scrollVisible", 2)) || 2)),
+            scrollStep: choiceValue(readConfigValue("scrollStep", "slot"),
+                ["page", "window", "slot"], "slot"),
+            scrollBoxWidth: Number(readConfigValue("scrollBoxWidth", 88)),
+            scrollBoxHeight: Number(readConfigValue("scrollBoxHeight", 56)),
             defaultLayout: choiceValue(readConfigValue("defaultLayout", "master"),
                 ["master", "columns", "monocle", "spiral", "stage", "rows", "hstack",
-                    "rmaster", "grid", "ultrawide"], "master"),
+                    "rmaster", "grid", "ultrawide", "scroll"], "master"),
             logLevel: choiceValue(readConfigValue("logLevel", "off"),
                 ["off", "info", "debug"], "off")
         };
         if (config.masterRatio < 0 || config.masterRatio > 1) { config.masterRatio = 0.6; }
         config.focusRatio = clampFocusRatio(config.focusRatio, 0.6);
         config.resizeStep = clampResizeStep(config.resizeStep);
+        config.scrollBoxWidth = Math.max(30, Math.min(100, isNaN(config.scrollBoxWidth) ? 88 : config.scrollBoxWidth));
+        config.scrollBoxHeight = Math.max(30, Math.min(100, isNaN(config.scrollBoxHeight) ? 56 : config.scrollBoxHeight));
         if (!api.tree.validAnyLayout(config.defaultLayout)) { config.defaultLayout = "master"; }
         if (config.defaultMode !== "float") { config.defaultMode = "tiled"; }
         if (["off", "info", "debug"].indexOf(config.logLevel) < 0) {
@@ -249,6 +260,82 @@
         return context.layout === "stage";
     }
 
+    function scrollLayout(context) {
+        return context.layout === "scroll";
+    }
+
+    function scrollState(context) {
+        if (!context.scroll) {
+            context.scroll = api.scroll.create({axis: config.scrollAxis, visible: config.scrollVisible,
+                box: {w: config.scrollBoxWidth / 100, h: config.scrollBoxHeight / 100}});
+        }
+        return context.scroll;
+    }
+
+    // User-minimized windows keep their state and do not occupy a page slot.
+    function scrollIds(context) {
+        return context.ids.filter(function (id) {
+            var state = states.get(id);
+            return state && (state.parked || !property(state.window, "minimized"));
+        });
+    }
+
+    function scrollPage(context, ids) {
+        return api.scroll.layout(ids || scrollIds(context), scrollState(context),
+            workArea(context), contextGaps(context), {ratio: context.scrollRatio});
+    }
+
+    function setParked(state, parked) {
+        if (!parked && !state.parked) { return; }
+        if (parked && !state.parked && property(state.window, "minimized")) { return; }
+        state.parked = parked;
+        if (!!property(state.window, "minimized") === parked) { return; }
+        state.expectedMinimized.push(parked);
+        parkingDepth++;
+        try { state.window.minimized = parked; }
+        finally { parkingDepth--; }
+    }
+
+    function revealScroll(state) {
+        var context = state.context;
+        context.scroll = api.scroll.reveal(scrollIds(context), scrollState(context), state.id);
+        applyContext(context);
+    }
+
+    function changeScroll(action) {
+        var context = activeContext();
+        if (!context || !scrollLayout(context)) { return; }
+        var current = scrollState(context);
+        if (config.scrollStep === "slot" && action !== "axis") {
+            var active = activeState();
+            var ids = scrollIds(context);
+            if (active && active.context === context && current.offset <= ids.indexOf(active.id) &&
+                    ids.indexOf(active.id) < current.offset + current.visible) {
+                var slot = ids.indexOf(active.id);
+                var cycled = api.scroll.cycleSlot(ids, current, active.id, action);
+                context.ids = context.ids.map(function (id) {
+                    var index = ids.indexOf(id);
+                    return index < 0 ? id : cycled.ids[index];
+                });
+                context.scroll = cycled.state;
+                applyContext(context);
+                var page = scrollPage(context, cycled.ids);
+                if (page.visible[slot - page.offset]) { activateOwn(page.visible[slot - page.offset]); }
+                return;
+            }
+        }
+        context.scroll = action === "axis" ? api.scroll.toggleAxis(current) :
+            api.scroll.scrollBy(scrollIds(context), current, action, {step: config.scrollStep});
+        applyContext(context);
+    }
+
+    function swapScroll(context, first, second) {
+        context.ids = context.ids.map(function (id) {
+            return id === first ? second : id === second ? first : id;
+        });
+        applyContext(context);
+    }
+
     function stageRatio(context) {
         return context.focusRatio === null ? config.focusRatio : context.focusRatio;
     }
@@ -280,6 +367,7 @@
 
     function contextRects(context) {
         if (stageLayout(context)) { return stageRects(context); }
+        if (scrollLayout(context)) { return scrollPage(context).rects; }
         return api.tree.layout(context.tree, workArea(context), contextGaps(context));
     }
 
@@ -289,6 +377,25 @@
         if (config.maxWindows > 0 && context.layout !== "monocle" &&
             !stageLayout(context)) { return config.maxWindows; }
         return api.tree.maxWindows(context.layout);
+    }
+
+    // Check only rectangles on the current page, recomputing after each victim.
+    function fitScroll(context, ids, keep, out) {
+        var tiled = ids.filter(function (id) { return scrollIds(context).indexOf(id) >= 0; });
+        while (tiled.length > 1) {
+            var page = scrollPage(context, tiled);
+            var bad = page.visible.filter(function (id) {
+                var min = windowMin(states.get(id));
+                return page.rects[id].width < min.width || page.rects[id].height < min.height;
+            });
+            if (!bad.length) { break; }
+            var pool = bad.filter(function (id) { return id !== keep; });
+            if (!pool.length) { pool = page.visible.filter(function (id) { return id !== keep; }); }
+            if (!pool.length) { break; }
+            pool.sort(function (a, b) { return states.get(b).seq - states.get(a).seq; });
+            out.push({id: pool[0], why: "nofit"});
+            tiled = tiled.filter(function (id) { return id !== pool[0]; });
+        }
     }
 
     function windowMin(state) {
@@ -332,7 +439,9 @@
         });
         var split = api.tree.limitSplit(context.ids, arrival, windowLimit(context), keep);
         var out = split.floated.map(function (id) { return {id: id, why: "overlimit"}; });
-        if (!stageLayout(context)) {
+        if (scrollLayout(context)) {
+            fitScroll(context, split.tiled, keep, out);
+        } else if (!stageLayout(context)) {
             var mins = {};
             split.tiled.forEach(function (id) { mins[id] = windowMin(states.get(id)); });
             var fitted = api.tree.fit(split.tiled, mins, workArea(context),
@@ -347,6 +456,7 @@
         });
         var fresh = members.filter(function (state) { return back.indexOf(state) < 0; });
         members.forEach(function (state) {
+            setParked(state, false);
             state.mode = "float";
             state.autoFloated = true;
         });
@@ -373,6 +483,28 @@
         if (context.groups.length) { return; }
         enforceLimits(context, retile);
         var rects = contextRects(context);
+        var active = activeState();
+        var parkedActive = false;
+        if (scrollLayout(context)) {
+            var page = scrollPage(context);
+            context.scroll.offset = page.offset;
+            // Suppress focus changes KWin causes while minimizing the active window.
+            parkingDepth++;
+            try {
+                context.ids.forEach(function (id) {
+                    var state = states.get(id);
+                    if (!state) { return; }
+                    var park = page.parked.indexOf(id) >= 0;
+                    if (park && active === state) { parkedActive = true; }
+                    setParked(state, park);
+                });
+            } finally { parkingDepth--; }
+            if (parkedActive && page.visible.length) {
+                activateOwn(page.visible.indexOf(active.id) >= 0 ? active.id : page.visible[0]);
+            }
+        } else {
+            contextStates(context).forEach(function (state) { setParked(state, false); });
+        }
         context.ids.forEach(function (id) {
             var state = states.get(id);
             if (!state || state.mode !== "tiled" || !rects[id]) { return; }
@@ -400,6 +532,7 @@
 
     function rebuild(context) {
         if (stageLayout(context)) { syncStage(context); }
+        else if (scrollLayout(context)) { scrollState(context); context.tree = null; }
         else {
             context.tree = api.tree.generate(context.layout, context.ids.slice(),
                 {masterRatio: config.masterRatio, nMaster: effectiveMasters(context)});
@@ -602,7 +735,9 @@
             seq: ++arrivalSeq,
             prevMode: null,
             groupId: null,
-            autoFloated: false
+            autoFloated: false,
+            parked: false,
+            expectedMinimized: []
         };
     }
 
@@ -713,6 +848,9 @@
             context.ids.push(id);
             rebuild(context);
         }
+        if (scrollLayout(context)) {
+            context.scroll = api.scroll.reveal(scrollIds(context), scrollState(context), id);
+        }
     }
 
     function removeWindow(window) {
@@ -724,6 +862,7 @@
         var state = states.get(id);
         if (!state) { return; }
         var context = state.context;
+        setParked(state, false);
         rememberClosed(state);
         if (state.mode === "arranged") { clearSlot(context, state); }
         context.ids = context.ids.filter(function (item) { return item !== id; });
@@ -746,6 +885,7 @@
 
     function floating(state) {
         if (state.mode === "float") { return; }
+        setParked(state, false);
         state.mode = "float";
         state.context.ids = state.context.ids.filter(function (id) { return id !== state.id; });
         if (state.context.adopted && !stageLayout(state.context)) {
@@ -779,6 +919,10 @@
         state.autoFloated = false;
         state.context.ids.push(state.id);
         rebuild(state.context);
+        if (scrollLayout(state.context)) {
+            state.context.scroll = api.scroll.reveal(scrollIds(state.context),
+                scrollState(state.context), state.id);
+        }
         applyContext(state.context);
         scheduleSave();
     }
@@ -801,6 +945,17 @@
         connectContextSignals(window, function () {
             if (!observing) { reassign(state); }
             else { contextFor(window); }
+        });
+        connect(window, "minimizedChanged", function () {
+            var minimized = !!property(window, "minimized");
+            if (state.expectedMinimized.length && state.expectedMinimized[0] === minimized) {
+                state.expectedMinimized.shift();
+                return;
+            }
+            if (!states.has(state.id) || state.mode !== "tiled" ||
+                    !scrollLayout(state.context)) { return; }
+            if (state.parked && !minimized) { revealScroll(state); }
+            else { applyContext(state.context); }
         });
         connect(window, "frameGeometryChanged", function () {
             var rect = roundedRect(property(window, "frameGeometry"));
@@ -861,6 +1016,7 @@
             state.context = next;
             return;
         }
+        setParked(state, false);
         state.autoFloated = false;
         state.reassigning = true;
         try {
@@ -886,6 +1042,9 @@
                 next.ids = next.ids.filter(function (id) { return id !== state.id; });
                 next.ids.push(state.id);
                 rebuild(next);
+                if (scrollLayout(next)) {
+                    next.scroll = api.scroll.reveal(scrollIds(next), scrollState(next), state.id);
+                }
             }
             if (previous.ids.length) { applyContext(previous, true); }
             if (state.mode === "tiled") { applyContext(next); }
@@ -904,10 +1063,16 @@
             var point = property(workspace, "cursorPos");
             var context = state.context;
             if (drag.context.key !== context.key) {
-                if (!stageLayout(context)) { insertAtDrop(state, context, point); }
+                if (!stageLayout(context) && !scrollLayout(context)) { insertAtDrop(state, context, point); }
                 if (drag.context.ids.length) { applyContext(drag.context); }
                 else { discardIfEmpty(drag.context); }
                 applyContext(context);
+                return;
+            }
+            if (scrollLayout(context)) {
+                var scrollTarget = point && stageTargetAt(contextRects(context), state.id, point);
+                if (scrollTarget) { swapScroll(context, state.id, scrollTarget); }
+                else { applyContext(context); }
                 return;
             }
             if (stageLayout(context)) {
@@ -930,6 +1095,7 @@
             }
         } else if (drag.resize) {
             if (stageLayout(state.context)) { resizeStage(state, drag); }
+            else if (scrollLayout(state.context)) { resizeScroll(state, drag); }
             else { resizeByFrame(state, drag); }
         }
     }
@@ -1036,6 +1202,46 @@
         return sides;
     }
 
+    function resizeScroll(state, drag) {
+        var context = state.context;
+        var page = scrollPage(context);
+        var end = roundedRect(property(state.window, "frameGeometry"));
+        if (drag.startGeometry && end) {
+            var vertical = context.scroll.axis === "v";
+            var work = api.geometry.workRect(workArea(context), contextGaps(context));
+            var gap = contextGaps(context).inner;
+            changedSides(drag.startGeometry, end).forEach(function (change) {
+                var box = page.box;
+                if ((change.side === "left" || change.side === "right") &&
+                        (change.side === "left" ? drag.startGeometry.x === box.x :
+                            drag.startGeometry.x + drag.startGeometry.width === box.x + box.width)) {
+                    var startEdge = change.side === "left" ? drag.startGeometry.x :
+                        drag.startGeometry.x + drag.startGeometry.width;
+                    context.scroll = api.scroll.resizeBox(context.scroll,
+                        (change.side === "left" ? -1 : 1) * (change.coord - startEdge) * 2 / work.width, 0);
+                } else if ((change.side === "top" || change.side === "bottom") &&
+                        (change.side === "top" ? drag.startGeometry.y === box.y :
+                            drag.startGeometry.y + drag.startGeometry.height === box.y + box.height)) {
+                    var startY = change.side === "top" ? drag.startGeometry.y :
+                        drag.startGeometry.y + drag.startGeometry.height;
+                    context.scroll = api.scroll.resizeBox(context.scroll, 0,
+                        (change.side === "top" ? -1 : 1) * (change.coord - startY) * 2 / work.height);
+                }
+            });
+            if (page.visible.length === 2) {
+                var first = page.visible[0] === state.id;
+                var side = vertical ? (first ? "bottom" : "top") : (first ? "right" : "left");
+                var size = (vertical ? page.box.height : page.box.width) - gap;
+                changedSides(drag.startGeometry, end).forEach(function (change) {
+                    if (change.side !== side || size <= 0) { return; }
+                    var coord = change.coord - (vertical ? page.box.y : page.box.x) - (first ? 0 : gap);
+                    context.scrollRatio = Math.max(0.1, Math.min(0.9, coord / size));
+                });
+            }
+        }
+        applyContext(context);
+    }
+
     function resizeByFrame(state, drag) {
         var context = state.context;
         var end = roundedRect(property(state.window, "frameGeometry"));
@@ -1096,7 +1302,7 @@
 
     function dock(side) {
         var state = activeState();
-        if (!state || state.mode !== "tiled" || stageLayout(state.context)) { return; }
+        if (!state || state.mode !== "tiled" || stageLayout(state.context) || scrollLayout(state.context)) { return; }
         state.context.tree = api.tree.dockToSide(state.context.tree, state.id, side);
         state.context.adopted = true;
         applyContext(state.context);
@@ -1122,6 +1328,7 @@
             }
             return;
         }
+        if (scrollLayout(context)) { swapScroll(context, state.id, target); return; }
         context.tree = api.tree.swap(context.tree, state.id, target);
         context.adopted = true;
         applyContext(context);
@@ -1210,6 +1417,7 @@
 
     function resizeTiled(state, axis, delta) {
         var context = state.context;
+        if (scrollLayout(context)) { return; }
         if (stageLayout(context)) {
             resizeStageFocus(state, axis, delta);
             return;
@@ -1231,6 +1439,16 @@
             return;
         }
         if (state.context.groups.length) { return; }
+        if (scrollLayout(state.context)) {
+            var scroll = scrollState(state.context);
+            var area = api.geometry.workRect(workArea(state.context), contextGaps(state.context));
+            var dw = axis === "v" ? 0 : delta * 2 / area.width;
+            var dh = axis === "h" ? 0 : delta * 2 / area.height;
+            if (axis === "both") { dw = delta * 2 / area.width; dh = delta * 2 / area.height; }
+            state.context.scroll = api.scroll.resizeBox(scroll, dw, dh);
+            applyContext(state.context);
+            return;
+        }
         var axes = axis === "both" ? ["h", "v"] : [axis];
         axes.forEach(function (name) { resizeTiled(state, name, delta); });
     }
@@ -1244,6 +1462,13 @@
 
     function changeMasters(delta) {
         var state = tiledActive();
+        if (state && scrollLayout(state.context)) {
+            var scrollContext = state.context;
+            scrollContext.scroll = api.scroll.setVisible(scrollIds(scrollContext),
+                scrollState(scrollContext), scrollState(scrollContext).visible + delta);
+            applyContext(scrollContext, true);
+            return;
+        }
         if (!state || MASTER_COUNT_LAYOUTS.indexOf(state.context.layout) < 0) { return; }
         var context = state.context;
         var current = effectiveMasters(context);
@@ -1266,6 +1491,7 @@
 
     function floatEach(context, members) {
         members.forEach(function (state) {
+            setParked(state, false);
             state.mode = "float";
             state.autoFloated = false;
         });
@@ -1293,6 +1519,10 @@
         });
         contexts.set(context.key, context);
         rebuild(context);
+        if (scrollLayout(context) && members.length) {
+            context.scroll = api.scroll.reveal(scrollIds(context), scrollState(context),
+                members[members.length - 1].id);
+        }
         applyContext(context, true);
     }
 
@@ -1340,13 +1570,14 @@
         return orderedIds(context).filter(function (id) {
             var state = states.get(id);
             return state && state.mode === "tiled" && state.context.key === context.key &&
-                !property(state.window, "minimized");
+                (state.parked || !property(state.window, "minimized"));
         });
     }
 
     function focusWindow(id, context) {
         var state = states.get(id);
         if (!state) { return; }
+        if (scrollLayout(context)) { revealScroll(state); }
         try { workspace.activeWindow = state.window; }
         catch (error) { logError("focus " + id, error); return; }
         if (context.layout === "monocle") { raiseWindow(state.window); }
@@ -1391,6 +1622,12 @@
         var id = api.focusTarget(rects, target.active, direction);
         if (id !== null) {
             focusWindow(id, target.context);
+        } else if (scrollLayout(target.context) &&
+                ((target.context.scroll.axis === "h" && (direction === "left" || direction === "right")) ||
+                (target.context.scroll.axis === "v" && (direction === "up" || direction === "down")))) {
+            var index = order.indexOf(target.active);
+            var next = index + (direction === "left" || direction === "up" ? -1 : 1);
+            if (next >= 0 && next < order.length) { focusWindow(order[next], target.context); }
         } else if (api.sharesRect(rects, target.active, 4)) {
             focusStep(direction === "left" || direction === "up" ? -1 : 1);
         }
@@ -1453,6 +1690,9 @@
             shortcut("Layout " + label, function () { switchLayout(name); });
             shortcut("Tile All " + label, function () { tileAll(name); });
         });
+        shortcut("Scroll Next", function () { changeScroll(1); });
+        shortcut("Scroll Previous", function () { changeScroll(-1); });
+        shortcut("Scroll Axis Toggle", function () { changeScroll("axis"); });
         shortcut("Stage Pin", function () { stagePin(true); });
         shortcut("Stage Unpin", function () { stagePin(false); });
         shortcut("Stage Cycle Next", function () { stageCycle(1); });
@@ -1464,6 +1704,7 @@
     }
 
     function onActivated(window) {
+        if (parkingDepth) { return; }
         settleEvent();
         var id = windowId(window);
         if (id === null) { return; }
@@ -1474,6 +1715,7 @@
         var state = states.get(id);
         if (!state || state.mode !== "tiled") { return; }
         if (state.context.layout === "monocle") { raiseWindow(window); }
+        else if (scrollLayout(state.context) && !own) { revealScroll(state); }
         else if (stageLayout(state.context) && !own) { promoteActivated(state); }
     }
 
@@ -1543,6 +1785,7 @@
     }
 
     function orderedIds(context) {
+        if (scrollLayout(context)) { return context.ids.slice(); }
         var order = stageLayout(context) && context.stage ?
             api.stage.order(context.stage) : api.tree.leafOrder(context.tree);
         order = logicalOrder(context, order);
@@ -1563,6 +1806,9 @@
         if (!context || !api.tree.validAnyLayout(name)) { return; }
         var wasStage = stageLayout(context);
         context.ids = orderedIds(context);
+        if (scrollLayout(context) && name !== "scroll") {
+            contextStates(context).forEach(function (state) { setParked(state, false); });
+        }
         context.layout = name;
         if (name === "stage") { enterStage(context, wasStage); }
         else { rebuild(context); }
@@ -1681,6 +1927,7 @@
         state.floatGeometry = roundedRect(property(state.window, "frameGeometry"));
         state.floatWorkArea = workArea(context);
         clearSlot(context, state);
+        setParked(state, false);
         state.mode = "float";
         state.groupId = null;
         state.prevMode = null;
@@ -1696,6 +1943,7 @@
             joinTiling(state.context, state.id);
             return;
         }
+        setParked(state, false);
         state.mode = "float";
         state.autoFloated = false;
         state.floatGeometry = restoreFloatGeometry(state);
@@ -1752,6 +2000,7 @@
         chosen.forEach(function (id) {
             var state = states.get(id);
             var record = core.windows.filter(function (item) { return item.id === id; })[0];
+            setParked(state, false);
             state.mode = "arranged";
             state.groupId = group.id;
             if (record.floatGeom) { state.floatGeometry = roundedRect(record.floatGeom); }

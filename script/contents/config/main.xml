@@ -67,7 +67,22 @@
       <label>Default layout</label>
       <default>0</default>
       <min>0</min>
-      <max>9</max>
+      <max>10</max>
+    </entry>
+    <entry name="scrollAxis" type="Int">
+      <label>Scroll axis</label><default>0</default><min>0</min><max>1</max>
+    </entry>
+    <entry name="scrollVisible" type="Int">
+      <label>Windows per scroll page</label><default>2</default><min>1</min><max>20</max>
+    </entry>
+    <entry name="scrollStep" type="Int">
+      <label>Scroll step</label><default>2</default><min>0</min><max>2</max>
+    </entry>
+    <entry name="scrollBoxWidth" type="Int">
+      <label>Scroll box width</label><default>88</default><min>30</min><max>100</max>
+    </entry>
+    <entry name="scrollBoxHeight" type="Int">
+      <label>Scroll box height</label><default>56</default><min>30</min><max>100</max>
     </entry>
     <entry name="maxWindows" type="Int">
       <label>Maximum tiled windows (0 = per-layout default)</label>

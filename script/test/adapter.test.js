@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const path = require('node:path');
 
 const root = path.resolve(__dirname, '../..');
-const buildFiles = ['geometry', 'tree', 'snap', 'stage', 'arrangement', 'context',
+const buildFiles = ['geometry', 'tree', 'snap', 'stage', 'scroll', 'arrangement', 'context',
     'persist', 'index'];
 const templatesJson = fs.readFileSync(path.join(root, 'core/templates.json'), 'utf8');
 const source = buildFiles.map(name => fs.readFileSync(
@@ -27,6 +27,7 @@ function makeWindow(id, options = {}) {
     const signals = {
         frameGeometryChanged: geometryChanged,
         tileChanged,
+        minimizedChanged: signal(),
         interactiveMoveResizeStarted: signal(),
         interactiveMoveResizeFinished: signal(),
         outputChanged: signal(),
@@ -35,6 +36,8 @@ function makeWindow(id, options = {}) {
     };
     let geometry = options.frameGeometry || {x: 0.4, y: 0.2, width: 799.6, height: 600.5};
     let geometryWrites = 0;
+    let minimized = !!options.minimized;
+    let minimizedWrites = 0;
     let tile = null;
     const window = Object.assign(signals, {
         internalId: id,
@@ -51,6 +54,17 @@ function makeWindow(id, options = {}) {
         frameGeometry: geometry,
         tile: tile
     });
+    Object.defineProperty(window, 'minimized', {
+        get() { return minimized; },
+        set(value) {
+            minimizedWrites++;
+            if (minimized === value) return;
+            minimized = value;
+            window.minimizedChanged.emit();
+            if (window.onMinimized) window.onMinimized(value);
+        }
+    });
+    Object.defineProperty(window, 'minimizedWrites', {get() { return minimizedWrites; }});
     Object.defineProperty(window, 'frameGeometry', {
         get() { return geometry; },
         set(value) {
@@ -183,7 +197,7 @@ test('script is inert by default and every shortcut has an empty default key', (
     const h = harness();
     h.add(makeWindow('a'));
     assert.deepEqual(geometry(h.windows[0]), {x: 0.4, y: 0.2, width: 799.6, height: 600.5});
-    assert.equal(h.shortcuts.size, 68);
+    assert.equal(h.shortcuts.size, 73);
     h.shortcuts.forEach(shortcut => assert.equal(shortcut.key, ''));
 });
 
@@ -808,7 +822,7 @@ test('adapter logs its build id at info level and stays quiet when logging is of
 
 test('build.sh injects the content hash into dist main.js', () => {
     const {execFileSync} = require('node:child_process');
-    execFileSync('sh', [path.join(root, 'script/build.sh')], {cwd: '/'});
+    execFileSync('sh', [path.join(root, 'script/build.sh')], {cwd: '/', stdio: 'inherit'});
     const dist = path.join(root, 'script/dist');
     const id = fs.readFileSync(path.join(dist, 'BUILD_ID'), 'utf8').trim();
     assert.match(id, /^[0-9a-f]{8}$/);
@@ -1027,24 +1041,21 @@ test('layout shortcuts switch a populated context to the same exact rects', () =
     });
 });
 
-test('layout next and previous cycle master, columns, monocle, spiral, rows, hstack, rmaster, grid, ultrawide, stage', () => {
+test('layout next and previous include scroll and wrap', () => {
     const h = harness(Object.assign({logLevel: 'info'}, gapped));
     const windows = addWindows(h, 3);
-    const seen = [];
-    for (let step = 0; step < 11; step++) {
+    const names = ['columns', 'monocle', 'spiral', 'rows', 'hstack', 'rmaster',
+        'grid', 'ultrawide', 'stage', 'scroll', 'master'];
+    names.forEach(name => {
         fireShortcut(h, 'Layout Next', windows[0]);
-        seen.push(rectOf(windows[1]));
-    }
-    assert.deepEqual(seen, [layoutRects.columns[3][1], layoutRects.monocle[3][1],
-        layoutRects.spiral[3][1], layoutRects.rows[3][1], layoutRects.hstack[3][1],
-        layoutRects.rmaster[3][1], layoutRects.grid[3][1], layoutRects.ultrawide[3][1],
-        stageRects[3][1], layoutRects.master[3][1], layoutRects.columns[3][1]]);
-    fireShortcut(h, 'Layout Previous', windows[0]);
-    assert.deepEqual(rectOf(windows[1]), layoutRects.master[3][1]);
-    fireShortcut(h, 'Layout Previous', windows[0]);
-    assert.deepEqual(rectOf(windows[1]), stageRects[3][1]);
-    fireShortcut(h, 'Layout Previous', windows[0]);
-    assert.deepEqual(rectOf(windows[1]), layoutRects.ultrawide[3][1]);
+        assert.equal(h.logs.filter(line => line.includes('layout ')).at(-1),
+            'weave layout ["DP-1",2] -> ' + name);
+    });
+    ['scroll', 'stage', 'ultrawide'].forEach(name => {
+        fireShortcut(h, 'Layout Previous', windows[0]);
+        assert.equal(h.logs.filter(line => line.includes('layout ')).at(-1),
+            'weave layout ["DP-1",2] -> ' + name);
+    });
 });
 
 test('every layout switch logs "layout <context> -> <name>" at info level', () => {
@@ -1154,7 +1165,8 @@ const slotRects = {
     'main-side': [[8, 8, 825, 785], [841, 8, 351, 785]],
     'golden-split': [[8, 8, 728, 785], [744, 8, 448, 785]],
     'trio-columns': [[8, 8, 391, 785], [407, 8, 386, 785], [801, 8, 391, 785]],
-    'trio-main-two-stacked': [[8, 8, 706, 785], [722, 8, 470, 389], [722, 405, 470, 388]]
+    'trio-main-two-stacked': [[8, 8, 706, 785], [722, 8, 470, 389], [722, 405, 470, 388]],
+    'pair-wide': [[67, 165, 529, 471], [604, 165, 529, 471]]
 };
 
 function activatedWindows(h, count) {
@@ -1168,11 +1180,12 @@ test('every template gives exact slot rects for 1 to 4 windows and spares the re
         [1, 2, 3, 4].forEach(count => {
             const h = harness(gapped);
             const windows = activatedWindows(h, count);
-            const before = windows.map(rectOf);
-            const writes = windows.map(window => window.geometryWrites);
-            for (let press = 0; press <= templateIndex; press++) {
+            for (let press = 0; press < templateIndex; press++) {
                 fireShortcut(h, 'Arrange Next', windows[count - 1]);
             }
+            const before = windows.map(rectOf);
+            const writes = windows.map(window => window.geometryWrites);
+            fireShortcut(h, 'Arrange Next', windows[count - 1]);
             const slots = slotRects[name];
             const chosen = windows.slice().reverse().slice(0, slots.length);
             chosen.forEach((window, slot) => {
@@ -1201,7 +1214,7 @@ test('arrange next and previous cycle the templates in file order', () => {
     const fresh = harness(gapped);
     const single = activatedWindows(fresh, 1);
     fireShortcut(fresh, 'Arrange Previous', single[0]);
-    assert.deepEqual(rectOf(single[0]), slotRects['trio-main-two-stacked'][0]);
+    assert.deepEqual(rectOf(single[0]), slotRects['pair-wide'][0]);
 });
 
 test('the active window and the most recently active ones fill the slots', () => {
@@ -2767,7 +2780,7 @@ function floatingWindows(h, count, options, prefix = 'w') {
 test('Tile All registers one shortcut per layout, named like the Layout ones', () => {
     const h = harness(gapped, {screens: twoScreens});
     ['Master', 'Columns', 'Monocle', 'Spiral', 'Rows', 'Hstack', 'Rmaster', 'Grid',
-        'Ultrawide', 'Stage'].forEach(name => {
+        'Ultrawide', 'Stage', 'Scroll'].forEach(name => {
         assert.ok(h.shortcuts.has('Weave Tile All ' + name), name);
         assert.ok(h.shortcuts.has('Weave Layout ' + name), name);
     });
@@ -3155,4 +3168,278 @@ test('focus: stage cycles its order and the overflow stack falls back to cycling
     fire(h, 'Focus Previous', windows[0]);
     assert.equal(activeId(h), 'w2');
     assert.equal(windows.length, 3);
+});
+
+// ---- Scroll (Pages), stub signals only ----
+// Legacy page/navigation fixtures opt into the old full-area geometry and page step;
+// centered-box and slot-step behavior is covered by the v2 cases below.
+const scrollSettings = Object.assign({defaultLayout: 'scroll', scrollBoxWidth: 100,
+    scrollBoxHeight: 100, scrollStep: 'page'}, gapped);
+const scrollH = [[8, 8, 588, 785], [604, 8, 588, 785]];
+const scrollV = [[8, 8, 1184, 389], [8, 405, 1184, 388]];
+function scrollSetup(count = 4, settings = {}, options = {}) {
+    const h = harness(Object.assign({}, scrollSettings, settings), options);
+    const windows = addWindows(h, count);
+    return {h, windows};
+}
+function assertScrollPage(windows, indices, rects = scrollH) {
+    assert.deepEqual(windows.map(w => w.minimized), windows.map((w, i) => !indices.includes(i)));
+    assert.deepEqual(indices.map(i => rectOf(windows[i])), rects);
+}
+
+test('scroll: new arrivals append and reveal; four windows show two exact slots', () => {
+    const {h, windows} = scrollSetup();
+    assertScrollPage(windows, [2, 3]);
+    const parkedWrites = windows.slice(0, 2).map(w => w.geometryWrites);
+    fireShortcut(h, 'Scroll Next', windows[2]);
+    assertScrollPage(windows, [2, 3]);
+    assert.deepEqual(windows.slice(0, 2).map(w => w.geometryWrites), parkedWrites);
+});
+
+test('scroll: next/previous use page steps, clamp without wrapping and preserve visible focus', () => {
+    const {h, windows} = scrollSetup(5);
+    fireShortcut(h, 'Scroll Previous', windows[4]);
+    assertScrollPage(windows, [1, 2]);
+    assert.equal(activeId(h), 'w1');
+    fireShortcut(h, 'Scroll Previous', windows[1]);
+    assertScrollPage(windows, [0, 1]);
+    assert.equal(activeId(h), 'w1');
+    fireShortcut(h, 'Scroll Previous', windows[1]);
+    assertScrollPage(windows, [0, 1]);
+    fireShortcut(h, 'Scroll Next', windows[1]);
+    assertScrollPage(windows, [2, 3]);
+    assert.equal(activeId(h), 'w2');
+    fireShortcut(h, 'Scroll Next', windows[2]);
+    assertScrollPage(windows, [3, 4]);
+});
+
+test('scroll: configured one-window step and vertical defaults', () => {
+    const {h, windows} = scrollSetup(4, {scrollStep: 'window', scrollAxis: 'v'});
+    assertScrollPage(windows, [2, 3], scrollV);
+    fireShortcut(h, 'Scroll Previous', windows[3]);
+    assertScrollPage(windows, [1, 2], scrollV);
+});
+
+test('scroll: activating a parked window reveals the smallest amount', () => {
+    const {h, windows} = scrollSetup();
+    h.activate(windows[1]);
+    assertScrollPage(windows, [1, 2]);
+    assert.equal(activeId(h), 'w1');
+    h.activate(windows[3]);
+    assertScrollPage(windows, [2, 3]);
+    assert.equal(activeId(h), 'w3');
+});
+
+test('scroll: user restoring a parked window reveals it without activation', () => {
+    const {h, windows} = scrollSetup();
+    h.activate(windows[3]);
+    windows[0].minimized = false;
+    assertScrollPage(windows, [0, 1]);
+    assert.equal(activeId(h), 'w0'); // old active is now parked, first visible wins
+});
+
+test('scroll: axis toggle keeps page; leaving scroll restores every parked window', () => {
+    const {h, windows} = scrollSetup();
+    fireShortcut(h, 'Scroll Axis Toggle', windows[3]);
+    assertScrollPage(windows, [2, 3], scrollV);
+    fireShortcut(h, 'Scroll Axis Toggle', windows[3]);
+    assertScrollPage(windows, [2, 3]);
+    fireShortcut(h, 'Layout Columns', windows[3]);
+    assert.deepEqual(windows.map(w => w.minimized), [false, false, false, false]);
+    assert.deepEqual(windows.map(rectOf), [[8, 8, 294, 785], [310, 8, 291, 785],
+        [609, 8, 288, 785], [905, 8, 287, 785]]);
+});
+
+test('scroll: user-minimized windows are never restored or parked by Weave', () => {
+    const {h, windows} = scrollSetup(2);
+    windows[0].minimized = true;
+    const writes = windows[0].minimizedWrites;
+    const before = rectOf(windows[0]);
+    const later = makeWindow('later');
+    h.add(later);
+    fireShortcut(h, 'Scroll Previous', windows[1]);
+    fireShortcut(h, 'Scroll Axis Toggle', windows[1]);
+    assert.equal(windows[0].minimizedWrites, writes);
+    assert.deepEqual(rectOf(windows[0]), before);
+    fireShortcut(h, 'Layout Master', windows[1]);
+    assert.equal(windows[0].minimized, true);
+    assert.equal(windows[0].minimizedWrites, writes);
+});
+
+test('scroll: initially user-minimized window is excluded from slots', () => {
+    const {h, windows} = scrollSetup(1);
+    const user = makeWindow('user', {minimized: true});
+    h.add(user);
+    assert.equal(user.minimizedWrites, 0);
+    assert.deepEqual(rectOf(windows[0]), [8, 8, 1184, 785]);
+    fireShortcut(h, 'Layout Columns', windows[0]);
+    assert.equal(user.minimizedWrites, 0);
+});
+
+test('scroll: closing visible and parked windows re-clamps a full last page', () => {
+    const {h, windows} = scrollSetup(5);
+    h.remove(windows[4]);
+    assertScrollPage(windows.slice(0, 4), [2, 3]);
+    h.remove(windows[0]);
+    assertScrollPage(windows.slice(1, 4), [1, 2]);
+    h.remove(windows[3]);
+    assertScrollPage(windows.slice(1, 3), [0, 1]);
+});
+
+test('scroll: minimize feedback writes once per state change, including KWin focus handoff', () => {
+    const {h, windows} = scrollSetup();
+    windows.forEach(w => {
+        w.onMinimized = minimized => {
+            if (minimized && h.workspace.activeWindow === w) {
+                // KWin may focus another soon-to-be-parked window mid-pass.
+                h.activate(windows.find(other => other !== w && !other.minimized));
+            }
+        };
+    });
+    const before = windows.map(w => w.minimizedWrites);
+    fireShortcut(h, 'Scroll Previous', windows[3]);
+    assertScrollPage(windows, [0, 1]);
+    assert.equal(activeId(h), 'w0');
+    assert.deepEqual(windows.map((w, i) => w.minimizedWrites - before[i]), [1, 1, 1, 1]);
+    const after = windows.map(w => w.minimizedWrites);
+    fireShortcut(h, 'Scroll Previous', windows[0]);
+    assert.deepEqual(windows.map(w => w.minimizedWrites), after);
+    assert.equal(h.logs.some(line => line.includes('weave error')), false);
+});
+
+test('scroll: positive maxWindows overrides default; zero allows more than ordinary layouts', () => {
+    const all = scrollSetup(12);
+    assert.equal(all.windows.filter(w => w.minimized).length, 10);
+    const limited = scrollSetup(4, {maxWindows: 3});
+    assert.equal(limited.windows[3].minimized, false);
+    assert.deepEqual(rectOf(limited.windows[3]), FLOAT_RECT);
+    assertScrollPage(limited.windows.slice(0, 3), [1, 2]);
+});
+
+test('scroll: minimum sizes are tested only on visible slots', () => {
+    const {h, windows} = scrollSetup();
+    windows[0].minSize = {width: 1000, height: 1000};
+    fireShortcut(h, 'Scroll Axis Toggle', windows[3]);
+    assert.equal(windows[0].minimized, true);
+    assert.equal(windows[0].minimizedWrites, 1);
+    fireShortcut(h, 'Scroll Previous', windows[3]);
+    assert.equal(windows[0].minimized, false); // visible no-fit auto-floats
+    assert.deepEqual(rectOf(windows[0]), FLOAT_RECT);
+});
+
+test('scroll: floating a parked window restores it and preserves the remaining order', () => {
+    const {h, windows} = scrollSetup();
+    fireShortcut(h, 'Toggle Float', windows[0]);
+    assert.equal(windows[0].minimized, false);
+    fireShortcut(h, 'Scroll Previous', windows[2]);
+    assert.deepEqual(windows.slice(1).map(w => w.minimized), [false, false, true]);
+});
+
+test('scroll: visible slot drop swaps ids and dropping beyond the edge does not scroll', () => {
+    const {h, windows} = scrollSetup();
+    const dragged = windows[2];
+    dragged.move = true;
+    dragged.interactiveMoveResizeStarted.emit();
+    h.workspace.cursorPos = {x: 900, y: 200};
+    dragged.interactiveMoveResizeFinished.emit();
+    assertScrollPage(windows, [3, 2]);
+    dragged.interactiveMoveResizeStarted.emit();
+    h.workspace.cursorPos = {x: 1300, y: 200};
+    dragged.interactiveMoveResizeFinished.emit();
+    assertScrollPage(windows, [3, 2]);
+});
+
+test('scroll: master count shortcuts change page size and clamp', () => {
+    const {h, windows} = scrollSetup();
+    fireShortcut(h, 'Master More', windows[3]);
+    assert.deepEqual(windows.map(w => w.minimized), [true, false, false, false]);
+    fireShortcut(h, 'Master Fewer', windows[3]);
+    assertScrollPage(windows, [1, 2]);
+});
+
+test('scroll: shared-edge resize updates the ratio on both axes and survives reapply', () => {
+    for (const axis of ['h', 'v']) {
+        const {h, windows} = scrollSetup(2, {scrollAxis: axis});
+        const first = windows[0];
+        first.resize = true;
+        first.interactiveMoveResizeStarted.emit();
+        first.frameGeometry = Object.assign({}, first.frameGeometry,
+            axis === 'h' ? {width: 700} : {height: 500});
+        first.interactiveMoveResizeFinished.emit();
+        assert.equal(axis === 'h' ? first.frameGeometry.width : first.frameGeometry.height,
+            axis === 'h' ? 700 : 500);
+        const before = windows.map(rectOf);
+        fireShortcut(h, 'Scroll Previous', first);
+        assert.deepEqual(windows.map(rectOf), before);
+    }
+});
+
+test('scroll: focus keys reveal parked windows past the page edge', () => {
+    const {h, windows} = scrollSetup();
+    fireShortcut(h, 'Focus Left', windows[2]);
+    assertScrollPage(windows, [1, 2]);
+    assert.equal(activeId(h), 'w1');
+    fireShortcut(h, 'Focus Previous', windows[1]);
+    assertScrollPage(windows, [0, 1]);
+    assert.equal(activeId(h), 'w0');
+});
+
+test('scroll: retiling a floated window appends and reveals it', () => {
+    const {h, windows} = scrollSetup();
+    fireShortcut(h, 'Toggle Float', windows[0]);
+    fireShortcut(h, 'Toggle Float', windows[0]);
+    assertScrollPage(windows, [3, 0]);
+});
+
+test('scroll: context axis/page settings are independent across outputs', () => {
+    const {h, windows} = scrollSetup();
+    const far = ['x', 'y', 'z'].map(id => makeWindow(id, {output: 'DP-2'}));
+    far.forEach(w => h.add(w));
+    fireShortcut(h, 'Scroll Axis Toggle', windows[3]);
+    fireShortcut(h, 'Scroll Previous', windows[3]);
+    assertScrollPage(windows, [0, 1], scrollV);
+    assertScrollPage(far, [1, 2]);
+    windows[2].output = 'DP-2';
+    windows[2].outputChanged.emit();
+    assert.equal(windows[2].minimized, false);
+    assertScrollPage(far.concat(windows[2]), [2, 3]);
+    assert.deepEqual(windows.filter(w => w.output === 'DP-1').map(w => w.minimized),
+        [false, false, true]);
+});
+
+test('scroll: Tile All Scroll includes floating arrivals and Float All restores parked windows', () => {
+    const h = harness(Object.assign({}, floatSettings), {screens: twoScreens});
+    const windows = floatingWindows(h, 4);
+    h.workspace.cursorPos = {x: 50, y: 50};
+    h.shortcuts.get('Weave Tile All Scroll').handler();
+    assertScrollPage(windows, [2, 3], [[79, 181, 517, 440], [604, 181, 517, 440]]);
+    fireShortcut(h, 'Float All', windows[3]);
+    assert.ok(windows.every(w => !w.minimized));
+});
+
+test('scroll: slot step replaces the focused visible slot and follows focus', () => {
+    const {h, windows} = scrollSetup(4, {scrollStep: 'slot'});
+    h.activate(windows[1]); // page becomes [1, 2], leaving 2 visible and parked 1
+    fireShortcut(h, 'Scroll Next', windows[1]);
+    assert.equal(windows[1].minimized, true);
+    assert.equal(windows[2].minimized, false);
+    assert.equal(windows[3].minimized, false);
+    assert.equal(activeId(h), 'w3');
+    fireShortcut(h, 'Scroll Previous', windows[3]);
+    assert.equal(windows[1].minimized, false);
+    assert.equal(windows[3].minimized, true);
+    assert.equal(windows[2].minimized, false);
+    assert.equal(activeId(h), 'w1');
+});
+
+test('scroll: centered default box and outer-edge drag resize', () => {
+    const {h, windows} = scrollSetup(2, {scrollStep: 'slot', scrollBoxWidth: 88,
+        scrollBoxHeight: 56});
+    assert.deepEqual(windows.map(rectOf), [[79, 181, 517, 440], [604, 181, 517, 440]]);
+    const first = windows[0];
+    first.resize = true;
+    first.interactiveMoveResizeStarted.emit();
+    first.frameGeometry = Object.assign({}, first.frameGeometry, {x: 59, width: 537});
+    first.interactiveMoveResizeFinished.emit();
+    assert.deepEqual(windows.map(rectOf), [[59, 181, 537, 440], [604, 181, 537, 440]]);
 });

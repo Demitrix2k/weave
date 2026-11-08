@@ -4,7 +4,7 @@ const {tree} = require('../index.js');
 
 test('default window limits per layout', () => {
     const expected = {master: 8, columns: 6, rows: 5, spiral: 6, hstack: 8, rmaster: 8,
-        grid: 9, ultrawide: 9, stage: 13};
+        grid: 9, ultrawide: 9, stage: 13, scroll: 20};
     Object.keys(expected).forEach(name => assert.equal(tree.maxWindows(name), expected[name]));
     assert.equal(tree.maxWindows('monocle'), Infinity);
     assert.equal(tree.maxWindows('nope'), Infinity);

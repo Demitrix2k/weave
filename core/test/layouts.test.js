@@ -5,7 +5,12 @@ const {tree, arrangement} = require('../index.js');
 test('layout names: valid, reserved and cycling in both directions', () => {
     assert.deepEqual(tree.LAYOUTS, ['master', 'columns', 'monocle', 'spiral', 'rows', 'hstack',
         'rmaster', 'grid', 'ultrawide']);
-    assert.deepEqual(tree.RESERVED_LAYOUTS, ['stage']);
+    assert.deepEqual(tree.RESERVED_LAYOUTS, ['stage', 'scroll']);
+    assert.equal(tree.validAnyLayout('scroll'), true);
+    assert.equal(tree.validLayout('scroll'), false);
+    assert.equal(tree.cycleAnyLayout('stage', 1), 'scroll');
+    assert.equal(tree.cycleAnyLayout('scroll', 1), 'master');
+    assert.equal(tree.cycleAnyLayout('master', -1), 'scroll');
     assert.equal(tree.validLayout('spiral'), true);
     assert.equal(tree.validLayout('stage'), false);
     assert.equal(tree.validLayout('nope'), false);

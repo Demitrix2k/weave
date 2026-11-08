@@ -394,3 +394,32 @@ KDE Rounded Corners' exclusions (`[Round-Corners] Exclusions=`) so it gets no ou
 
 Qt caches a folder's file list and imported JS until logout: after an update (`-u`) toggle
 the script off and on; the data file lives in `contents/ui/lib-<hash>/` for that reason.
+
+## Scroll layout (Pages)
+
+`Layout Scroll` selects a page of tiled windows; Layout Next/Previous and the
+picker include Scroll. `Tile All Scroll` includes floating windows on the cursor's
+monitor. All shortcuts have empty default keys.
+
+- `Scroll Next` / `Scroll Previous`: with default `slot`, replace the active visible slot with the next/previous parked window; `page` and `window` retain page and one-window scrolling.
+- `Scroll Axis Toggle`: switch between side-by-side columns and stacked rows.
+- The existing master-count increase/decrease shortcuts change windows per page.
+- Focus Next/Previous and focus along the page axis can reveal parked windows.
+
+`scrollAxis` is `h` (default) or `v`, `scrollVisible` defaults to 2, and
+`scrollStep` is `slot` (default), `page`, or `window`. `scrollBoxWidth` and
+`scrollBoxHeight` default to 88% and 56% of the gapped work area. The settings dialog stores axis and
+step as combo indices. Axis, visible count, offset, box and split ratio live per
+context for this session; new contexts use the configured defaults. Scroll's
+window limit is 20 when `maxWindows=0`; a positive setting overrides it.
+Only the visible page is checked against window minimum sizes.
+
+Windows outside the page are minimized and flagged as parked by Weave. They
+remain visible as minimized windows in the task manager. Activating or restoring
+one reveals it. A new tiled window is appended and revealed; closing one clamps
+the page again. Leaving Scroll or tiling restores windows parked by Weave;
+user-minimized windows are preserved and excluded from page slots.
+Dropping on another visible slot swaps the windows, with no edge scrolling.
+Dragging the shared edge of a two-window page adjusts its split ratio. Dragging
+an outer box edge resizes the centered box symmetrically; Resize Grow/Shrink
+shortcuts use the same resize step.

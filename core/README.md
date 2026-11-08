@@ -4,9 +4,13 @@ Run `node --test core/test` from the repository root, or `npm test --prefix core
 No dependencies or desktop integration are required.
 
 Every runtime file is an ES2017 classic script with the specified UMD wrapper.
-For QML concatenate geometry, tree, snap, stage, arrangement, context, index in
+
+Scroll (Pages) uses a centered normalized box (`w=.88`, `h=.56` by default;
+`1,1` preserves full-area geometry). `scroll.resizeBox` and `scroll.cycleSlot`
+are pure helpers for box resizing and in-place visible-slot replacement.
+For QML concatenate geometry, tree, snap, stage, scroll, arrangement, context, index in
 that order. Load templates.json separately as data. Node can require index.js.
-Module namespaces (`geometry`, `tree`, `snap`, `stage`, `arrangement`, `context`)
+Module namespaces (`geometry`, `tree`, `snap`, `stage`, `scroll`, `arrangement`, `context`)
 avoid name collisions; flat exports also exist, with `layout` meaning tree layout.
 Inputs are never changed. ExpectedGeometry is the intentional stateful exception:
 its private event queue changes when recording or consuming expectations.
@@ -38,6 +42,10 @@ its private event queue changes when recording or consuming expectations.
   (`anchor`); layoutContext uses it. focusRatioForEdge(workArea, gaps, where,
   coord) is the unclamped focus ratio implied by a dragged edge (where: focus-left,
   focus-right, left-rail, right-rail).
+- scroll: create, clampOffset, page, layout, scrollBy, reveal, setVisible,
+  toggleAxis. State is `{axis: 'h'|'v', visible, offset}`; `layout` returns
+  rectangles for the visible page plus the parked IDs, and `scrollBy` supports
+  page/window steps with optional wrapping.
 - tree also has CYCLE_LAYOUTS (LAYOUTS then stage), validAnyLayout, cycleAnyLayout.
 - arrangement: validateTemplate returns boolean; applyTemplate returns rectangles
   in slot order; assign returns {slots: window IDs or null, unfilled: indices,

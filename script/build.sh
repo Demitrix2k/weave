@@ -15,6 +15,7 @@ cat \
     "$root/core/tree.js" \
     "$root/core/snap.js" \
     "$root/core/stage.js" \
+    "$root/core/scroll.js" \
     "$root/core/arrangement.js" \
     "$root/core/context.js" \
     "$root/core/persist.js" \

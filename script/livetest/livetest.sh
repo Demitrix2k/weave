@@ -346,6 +346,9 @@ if [ "$DRY_RUN" = true ]; then
     say "DRY-RUN: for rows, hstack, rmaster, grid, ultrawide: invoke Weave Layout <Name>; wait to settle;"
     say "DRY-RUN: with WEAVE_LIVETEST_SHOTS=<dir>: spectacle -b -n -f -o <dir>/live-<layout>.png (wait up to 5 s for the file)"
     say "DRY-RUN: check-s13.js (S13a..S13e) prints the four frame rects and asserts the layout shape"
+    say "DRY-RUN: S14: invoke Weave Layout Scroll, Weave Scroll Next, Weave Scroll Previous, Weave Scroll Axis Toggle;"
+    say "DRY-RUN: activate-s14.js (activeWindow on a parked window); invoke Weave Layout Master;"
+    say "DRY-RUN: check-s14.js (S14a..S14f) asserts visible/minimized sets, rects and the active window"
     say "DRY-RUN: journalctl result parsing, summary table, optional JSON array"
     say "DRY-RUN: kill <recorded PID> and wait <recorded PID> for each launch"
     say "DRY-RUN: without a live install: disable/remove Weave, delete the harness keys"
@@ -383,7 +386,7 @@ fi
 RESOURCE_CLASS=$(sed -n 's/^var KCALC_RESOURCE_CLASS = "\([^"]*\)";.*/\1/p' \
     "$JS_DIR/expected.js")
 cat "$ROOT/core/geometry.js" "$ROOT/core/tree.js" "$ROOT/core/snap.js" \
-    "$ROOT/core/stage.js" "$ROOT/core/arrangement.js" "$ROOT/core/context.js" \
+    "$ROOT/core/stage.js" "$ROOT/core/scroll.js" "$ROOT/core/arrangement.js" "$ROOT/core/context.js" \
     "$ROOT/core/index.js" "$JS_DIR/expected.js" \
     > "$TMP_DIR/check-prefix.js"
 printf '\nvar WEAVE_LIVE_TEMPLATES = ' >> "$TMP_DIR/check-prefix.js"
@@ -499,7 +502,7 @@ run_script() {
     else
         cat "$TMP_DIR/check-prefix.js" > "$TMP_DIR/$name.js"
         case "$source_file" in
-            check-s7*|check-s8*|check-s9*|check-s10*|check-s11*|check-s12*|check-s13*|activate-live.js|move-s8.js)
+            check-s7*|check-s8*|check-s9*|check-s10*|check-s11*|check-s12*|check-s13*|check-s14*|activate-live.js|move-s8.js)
                 printf '%s\n' "$LIVE_PRE" >> "$TMP_DIR/$name.js" ;;
         esac
         cat "$JS_DIR/$source_file" >> "$TMP_DIR/$name.js"
@@ -555,6 +558,7 @@ snapshot_first_size() {
 SCENARIOS="S1 S2 S3 S4 S5 S6 S7a S7b S7c S7d S8a S8b S8c S9a S9b S9c S9d"
 SCENARIOS="$SCENARIOS S10a S10b S10c S10d S10e S10f S10g S10h S11a S11b S11c S11d"
 SCENARIOS="$SCENARIOS S12a S12b S12c S12d S13a S13b S13c S13d S13e"
+SCENARIOS="$SCENARIOS S14a S14b S14c S14d S14e S14f"
 
 summary() {
     statuses=
@@ -933,6 +937,43 @@ if [ "$S13_OK" = true ]; then
     done
 else
     say "S13 skipped: four tiled windows were not available"
+fi
+# S14: the Scroll layout on the four windows of S13. Each step is checked by the visible and
+# minimized sets, the page rects and the active window; the ids of a step's visible windows
+# feed the next step's expectation.
+s14_ids() { printf '%s\n' "$LAST_STEP_LINE" | sed -n "s/.*\"$1\":\[\([^]]*\)\].*/\1/p"; }
+s14_check() {
+    LIVE_PRE="var s14Step = \"$1\"; var s14Axis = \"$2\"; var s14Rel = \"$3\"; var s14Prev = [$4];"
+    run_script check-s14.js "weave-live-check-s14$1" "S14$1"
+}
+if [ "$S13_OK" = true ]; then
+    invoke "Weave Layout Scroll"
+    sleep 2
+    s14_check a h none ""
+    S14_V1=$(s14_ids visible)
+    S14_V2=$(s14_ids parked)
+    shot scroll-a
+    invoke "Weave Scroll Next"
+    sleep 2
+    s14_check b h slot "$S14_V1"
+    invoke "Weave Scroll Previous"
+    sleep 2
+    s14_check c h same "$S14_V1"
+    invoke "Weave Scroll Axis Toggle"
+    sleep 2
+    s14_check d v same "$S14_V1"
+    shot scroll-d
+    LIVE_PRE=
+    run_script activate-s14.js weave-live-activate-s14 ''
+    S14_TARGET=${LAST_STEP_LINE#WEAVE_LIVE_STEP activated }
+    sleep 2
+    s14_check e v target "\"$S14_TARGET\""
+    invoke "Weave Layout Master"
+    sleep 2
+    s14_check f h none ""
+    shot scroll-f
+else
+    say "S14 skipped: four tiled windows were not available"
 fi
 # Let the 2 s save debounce fire before cleanup unloads the script.
 sleep 3

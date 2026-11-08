@@ -768,6 +768,82 @@ test('the harness runs S13 with the layout keys and an optional spectacle screen
     assert.ok(source.includes('check-s13.js'));
 });
 
+// S14: the Scroll layout; two windows visible per page, the rest minimized.
+function runS14(step, axis, rel, prev, wins, active) {
+    const windows = wins.map((win, index) => ({
+        resourceClass: expected.resourceClass, internalId: '{w' + index + '}', desktop: 1,
+        output: {name: 'DP-1'}, minimized: win.minimized,
+        frameGeometry: Object.assign({}, win.rect)
+    }));
+    const lines = [];
+    expected.output = line => lines.push(line);
+    vm.runInNewContext(fs.readFileSync(path.resolve(__dirname,
+        '../livetest/js/check-s14.js'), 'utf8'), {
+        Weave: core, KWin: {PlacementArea: 0}, JSON, Math, String, Object, Array,
+        s14Step: step, s14Axis: axis, s14Rel: rel, s14Prev: prev,
+        KCALC_RESOURCE_CLASS: expected.resourceClass,
+        workspace: {screens: [{name: 'DP-1'}], windowList: () => windows,
+            activeWindow: active === undefined ? null : windows[active],
+            clientArea: () => dpArea}
+    });
+    expected.output = null;
+    return JSON.parse(lines[0].slice('WEAVE_LIVE '.length));
+}
+
+test('S14a to S14f check pages, the parked set and the master layout', () => {
+    const gaps = {outer: 8, inner: 8};
+    const page = axis => core.scroll.layout(['a', 'b'], {axis, visible: 2, offset: 0},
+        dpArea, gaps, {});
+    const rectOf = (p, id) => expected.rounded(p.rects[id]);
+    const off = {x: 50, y: 50, width: 300, height: 400};
+    const h = page('h');
+    const win = (rect, minimized) => ({rect, minimized});
+    const first = [win(rectOf(h, 'a')), win(rectOf(h, 'b')), win(off, true), win(off, true)];
+    const a = runS14('a', 'h', 'none', [], first, 0);
+    assert.equal(a.status, 'PASS');
+    assert.deepEqual(a.info.visible, ['{w0}', '{w1}']);
+    assert.deepEqual(a.info.parked, ['{w2}', '{w3}']);
+    assert.equal(a.info.active, '{w0}');
+    assert.equal(runS14('a', 'h', 'none', [], first.map((w, i) => i === 0 ?
+        win(Object.assign({}, w.rect, {x: w.rect.x + 9})) : w), 0).status, 'FAIL');
+    assert.equal(runS14('a', 'h', 'none', [], first.slice(0, 3).concat(
+        [win(rectOf(h, 'a'))]), 0).status, 'FAIL', 'three visible');
+    const second = [win(off, true), win(off, true), win(rectOf(h, 'a')), win(rectOf(h, 'b'))];
+    assert.equal(runS14('b', 'h', 'other', ['{w0}', '{w1}'], second, 2).status, 'PASS');
+    assert.equal(runS14('b', 'h', 'other', ['{w0}', '{w2}'], second, 2).status, 'FAIL');
+    assert.equal(runS14('c', 'h', 'same', ['{w0}', '{w1}'], first, 0).status, 'PASS');
+    assert.equal(runS14('c', 'h', 'same', ['{w0}', '{w1}'], second, 2).status, 'FAIL');
+    const v = page('v');
+    const stacked = [win(rectOf(v, 'a')), win(rectOf(v, 'b')), win(off, true), win(off, true)];
+    assert.equal(runS14('d', 'v', 'same', ['{w0}', '{w1}'], stacked, 0).status, 'PASS');
+    assert.equal(runS14('d', 'v', 'same', ['{w0}', '{w1}'], first, 0).status, 'FAIL', 'side by side');
+    const revealed = [win(off, true), win(rectOf(v, 'a')), win(rectOf(v, 'b')), win(off, true)];
+    assert.equal(runS14('e', 'v', 'target', ['{w2}'], revealed, 2).status, 'PASS');
+    assert.equal(runS14('e', 'v', 'target', ['{w2}'], revealed, 1).status, 'FAIL', 'focus');
+    const ids = ['a', 'b', 'c', 'd'];
+    const placed = core.tree.layout(core.tree.generate('master', ids.slice(),
+        {masterRatio: 0.6}), dpArea, gaps);
+    const all = ids.map(id => win(expected.rounded(placed[id])));
+    assert.equal(runS14('f', 'h', 'none', [], all, 0).status, 'PASS');
+    assert.equal(runS14('f', 'h', 'none', [], all.map((w, i) => i === 3 ?
+        win(w.rect, true) : w), 0).status, 'FAIL', 'one still minimized');
+});
+
+test('the harness runs S14 with the scroll shortcuts in order', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../livetest/livetest.sh'), 'utf8');
+    assert.match(source, /S14a S14b S14c S14d S14e S14f/);
+    const order = ['Weave Layout Scroll', 'Weave Scroll Next', 'Weave Scroll Previous',
+        'Weave Scroll Axis Toggle', 'activate-s14.js', 'Weave Layout Master'];
+    let at = source.indexOf('S14: the Scroll layout');
+    order.forEach(item => {
+        const next = source.indexOf(item, at);
+        assert.ok(next > at, item);
+        at = next;
+    });
+    assert.ok(source.includes('check-s14.js'));
+    assert.ok(source.includes('core/scroll.js'));
+});
+
 // ---- behavioural tests against stub executables -------------------------------------
 
 const {spawnSync} = require('node:child_process');

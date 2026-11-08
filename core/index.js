@@ -10,6 +10,7 @@
     const treeModule = dep('tree');
     const snapModule = dep('snap');
     const stageModule = dep('stage');
+    const scrollModule = dep('scroll');
     const arrangementModule = dep('arrangement');
     const contextModule = dep('context');
     const persistModule = dep('persist');
@@ -17,6 +18,7 @@
     const tree = treeModule.tree || treeModule;
     const snap = snapModule.snap || snapModule;
     const stage = stageModule.stage || stageModule;
+    const scroll = scrollModule.scroll || scrollModule;
     const arrangement = arrangementModule.arrangement || arrangementModule;
     const context = contextModule.context || contextModule;
     const persist = persistModule.persist || persistModule;
@@ -26,6 +28,7 @@
         tree,
         snap,
         stage,
+        scroll,
         arrangement,
         context,
         persist,
