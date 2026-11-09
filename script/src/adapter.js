@@ -794,8 +794,9 @@
                 context.adopted = true;
                 adoptWindows(rest, context, "tiled", saved.matches);
             }
-            if (!inferred && config.defaultMode === "float") {
-                // no clean partition: keep them managed, floating where they are
+            if (!inferred) {
+                // No clean partition: register them as floating even in tiled mode.
+                // Startup must not move them, but later tile commands must find them.
                 adoptWindows(rest, context, "float", saved.matches);
             }
             adoptWindows(floats, context, "float", saved.matches);

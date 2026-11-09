@@ -2766,6 +2766,103 @@ const twoScreens = [
 ];
 const floatSettings = Object.assign({defaultMode: 'float'}, gapped);
 
+// Distinct work areas matter: the basic harness otherwise returns DP-1's area
+// for both outputs, which hides geometry written to the wrong monitor.
+const twoScreenAreas = Object.fromEntries(twoScreens.map(output =>
+    [output.name, output.geometry]));
+
+function assertTiledOnScreen(window, screen, layout = 'master') {
+    const area = screen.geometry;
+    const rect = geometry(window);
+    assert.ok(window.geometryWrites > 0, 'window received a tiled rectangle');
+    assert.ok(rect.x >= area.x + 8 && rect.y >= area.y + 8);
+    assert.ok(rect.x + rect.width <= area.x + area.width - 8);
+    assert.ok(rect.y + rect.height <= area.y + area.height - 8);
+    if (layout !== 'scroll') {
+        assert.deepEqual(rect, {x: area.x + 8, y: area.y + 8,
+            width: area.width - 16, height: area.height - 16});
+    }
+}
+
+for (const untile of ['Toggle Float', 'Float All']) {
+    for (const tile of ['Toggle Float', 'Tile All Master', 'default arrival']) {
+        test(`two monitors: ${untile} on right then ${tile} on left`, () => {
+            const h = harness(gapped, {screens: twoScreens, areas: twoScreenAreas});
+            const right = makeWindow('right', {output: twoScreens[1],
+                frameGeometry: {x: 1400, y: 100, width: 300, height: 200}});
+            h.add(right);
+            assertTiledOnScreen(right, twoScreens[1]);
+            fireShortcut(h, untile, right);
+            const rightBefore = geometry(right);
+            const left = makeWindow('left', {output: twoScreens[0],
+                frameGeometry: {x: 100, y: 100, width: 300, height: 200}});
+            if (tile !== 'default arrival') {
+                h.settings.defaultMode = 'float';
+                h.changed.emit();
+            }
+            h.add(left);
+            if (tile !== 'default arrival') {
+                h.workspace.cursorPos = {x: 100, y: 100};
+                fireShortcut(h, tile, left);
+            }
+            assertTiledOnScreen(left, twoScreens[0]);
+            assert.deepEqual(geometry(right), rightBefore);
+            assert.equal(h.logs.some(line => line.includes('weave error')), false);
+        });
+    }
+    for (const tile of ['Toggle Float', 'Tile All Master', 'Tile All Stage',
+        'Tile All Scroll', 'Float All']) {
+        test(`two monitors: startup left window tiles via ${tile} after right ${untile}`, () => {
+            const right = makeWindow('right', {output: twoScreens[1],
+                frameGeometry: {x: 1208, y: 8, width: 1184, height: 784}});
+            const left = makeWindow('left', {output: twoScreens[0],
+                frameGeometry: {x: 100, y: 100, width: 300, height: 200}});
+            const h = harness(gapped, {screens: twoScreens, areas: twoScreenAreas,
+                initialWindows: [right, left]});
+            assert.equal(left.geometryWrites + right.geometryWrites, 0,
+                'startup adoption must not move windows');
+            fireShortcut(h, untile, right);
+            const rightBefore = geometry(right);
+            h.workspace.cursorPos = {x: 100, y: 100};
+            fireShortcut(h, tile, left);
+            assertTiledOnScreen(left, twoScreens[0],
+                tile === 'Tile All Scroll' ? 'scroll' : 'master');
+            assert.deepEqual(geometry(right), rightBefore);
+            assert.equal(h.logs.some(line => line.includes('weave error')), false);
+        });
+    }
+}
+
+test('two monitors: tiling startup floats on left preserves parked scroll windows on right', () => {
+    const left = makeWindow('left', {output: twoScreens[0],
+        frameGeometry: {x: 100, y: 100, width: 300, height: 200}});
+    const userMinimized = makeWindow('user-minimized', {output: twoScreens[0],
+        minimized: true, frameGeometry: {x: 100, y: 100, width: 300, height: 200}});
+    const h = harness(gapped, {screens: twoScreens, areas: twoScreenAreas,
+        initialWindows: [left, userMinimized]});
+    h.workspace.cursorPos = {x: 1300, y: 100};
+    fireShortcut(h, 'Tile All Scroll', null);
+    const right = Array.from({length: 4}, (_, index) => makeWindow('right' + index,
+        {output: twoScreens[1],
+            frameGeometry: {x: 1400, y: 100, width: 300, height: 200}}));
+    right.forEach(window => h.add(window));
+    assert.deepEqual(right.map(window => window.minimized), [true, true, false, false]);
+    const before = right.map(window => ({rect: geometry(window),
+        geometryWrites: window.geometryWrites, minimizedWrites: window.minimizedWrites}));
+    h.workspace.cursorPos = {x: 100, y: 100};
+    fireShortcut(h, 'Tile All Scroll', left);
+    assertTiledOnScreen(left, twoScreens[0], 'scroll');
+    assert.equal(userMinimized.minimized, true);
+    assert.equal(userMinimized.minimizedWrites, 0);
+    assert.equal(userMinimized.geometryWrites, 0);
+    assert.deepEqual(right.map(window => ({rect: geometry(window),
+        geometryWrites: window.geometryWrites, minimizedWrites: window.minimizedWrites})), before);
+    fireShortcut(h, 'Float All', right[3]);
+    assert.ok(right.every(window => !window.minimized));
+    assert.equal(userMinimized.minimized, true);
+    assert.equal(h.logs.some(line => line.includes('weave error')), false);
+});
+
 function floatingWindows(h, count, options, prefix = 'w') {
     const made = [];
     for (let index = 0; index < count; index++) {
