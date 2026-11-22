@@ -564,7 +564,7 @@ function startWeave(host, api, templates) {
 
     function startTimer(milliseconds, callback) {
         if (host && typeof host.startTimer === "function") {
-            host.startTimer(milliseconds, callback);
+            host.startTimer(milliseconds, guarded("timer", callback));
             return true;
         }
         return false;

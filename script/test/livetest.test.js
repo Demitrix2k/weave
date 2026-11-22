@@ -977,10 +977,10 @@ function makeWorld(options) {
     fs.writeFileSync(path.join(world.stubDir, 'state'), options.state || '');
     if (options.package) {
         const pkg = path.join(world.scripts, 'weave');
-        fs.mkdirSync(path.join(pkg, 'contents/code'), {recursive: true});
-        fs.writeFileSync(path.join(pkg, 'metadata.json'), '{"Id":"weave","note":"user copy"}\n');
-        fs.writeFileSync(path.join(pkg, 'contents/code/main.js'), 'var user = "real";\nå\n');
-        fs.writeFileSync(path.join(pkg, 'contents/code/data.bin'), Buffer.from([0, 1, 2, 255]));
+        fs.mkdirSync(path.join(pkg, 'contents/ui'), {recursive: true});
+        fs.writeFileSync(path.join(pkg, 'metadata.json'), '{"KPlugin":{"Id":"weave"},"X-Plasma-API":"declarativescript","note":"user copy"}\n');
+        fs.writeFileSync(path.join(pkg, 'contents/ui/main.qml'), 'import QtQuick\nItem { property string user: "å" }\n');
+        fs.writeFileSync(path.join(pkg, 'contents/ui/data.bin'), Buffer.from([0, 1, 2, 255]));
     }
     return world;
 }

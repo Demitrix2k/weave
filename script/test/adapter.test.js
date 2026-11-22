@@ -125,7 +125,7 @@ function harness(settings = {}, options = {}) {
     const dbusCalls = [];
     const quit = signal();
     workspace.aboutToQuit = quit;
-    const sandbox = vm.createContext({
+    const host = {
         workspace,
         KWin: {PlacementArea: 0},
         readConfig(name, fallback) {
@@ -139,9 +139,9 @@ function harness(settings = {}, options = {}) {
             timers.push({due: now + milliseconds, callback});
         },
         print(message) { logs.push(String(message)); }
-    });
+    };
     if (options.dbus) {
-        sandbox.callDBus = function (service, path, iface, method, ...args) {
+        host.callDBus = function (service, path, iface, method, ...args) {
             const callback = args.pop();
             dbusCalls.push({service, path, iface, method, args});
             if (options.dbus.throws) { throw new Error('no bus'); }
@@ -154,8 +154,9 @@ function harness(settings = {}, options = {}) {
             }
         };
     }
+    const sandbox = vm.createContext({Date: host.Date});
     vm.runInContext(source, sandbox);
-    const runtime = sandbox.startWeave(sandbox, sandbox.Weave, sandbox.WEAVE_TEMPLATES);
+    const runtime = sandbox.startWeave(host, sandbox.Weave, sandbox.WEAVE_TEMPLATES);
     function add(window) {
         windows.push(window);
         added.emit(window);
@@ -821,17 +822,34 @@ test('adapter logs its build id at info level and stays quiet when logging is of
     assert.ok(!quiet.logs.some(line => line.includes('loaded build')));
 });
 
-test('build.sh injects the content hash into dist main.js', () => {
+test('build.sh injects the content hash into the declarative package', () => {
     const {execFileSync} = require('node:child_process');
     execFileSync('sh', [path.join(root, 'script/build.sh')], {cwd: '/', stdio: 'inherit'});
     const dist = path.join(root, 'script/dist');
     const id = fs.readFileSync(path.join(dist, 'BUILD_ID'), 'utf8').trim();
     assert.match(id, /^[0-9a-f]{8}$/);
-    const built = fs.readFileSync(path.join(dist, 'contents/code/main.js'), 'utf8');
+    const built = fs.readFileSync(path.join(dist, 'contents/ui', 'lib-' + id, 'weave.js'), 'utf8');
     assert.ok(built.includes('BUILD_ID = "' + id + '"'));
     assert.ok(!built.includes('@@BUILD_ID@@'));
     assert.ok(built.includes('var WEAVE_TEMPLATES = {'));
     assert.ok(built.includes('"pair-centred"'));
+    const metadata = JSON.parse(fs.readFileSync(path.join(dist, 'metadata.json'), 'utf8'));
+    assert.equal(metadata.KPlugin.Id, 'weave');
+    assert.equal(metadata['X-Plasma-API'], 'declarativescript');
+    assert.equal(metadata['X-Plasma-MainScript'], 'ui/main.qml');
+    assert.equal(fs.existsSync(path.join(dist, 'contents/code/main.js')), false);
+    for (const name of ['Weave', 'Picker']) {
+        const qml = fs.readFileSync(path.join(dist, 'contents/ui', name + '.qml'), 'utf8');
+        assert.ok(!qml.includes('@@BUILD_ID@@'));
+        for (const match of qml.matchAll(/import "([^"]+\.js)"/g)) {
+            assert.ok(match[1].startsWith('lib-' + id + '/'));
+            assert.ok(fs.existsSync(path.join(dist, 'contents/ui', match[1])));
+        }
+    }
+    for (const relative of ['contents/config/main.xml', 'contents/ui/config.ui']) {
+        assert.deepEqual(fs.readFileSync(path.join(dist, relative)),
+            fs.readFileSync(path.join(root, 'script', relative)));
+    }
 });
 
 function resizeHarness() {
@@ -3540,4 +3558,34 @@ test('scroll: centered default box and outer-edge drag resize', () => {
     first.frameGeometry = Object.assign({}, first.frameGeometry, {x: 59, width: 537});
     first.interactiveMoveResizeFinished.emit();
     assert.deepEqual(windows.map(rectOf), [[59, 181, 537, 440], [604, 181, 537, 440]]);
+});
+
+
+test('picker direct call matches every Tile All shortcut without D-Bus', () => {
+    const names = require('../../core').tree.CYCLE_LAYOUTS;
+    names.forEach(name => {
+        const direct = harness(floatSettings, {screens: twoScreens});
+        const shortcut = harness(floatSettings, {screens: twoScreens});
+        const a = floatingWindows(direct, 4);
+        const b = floatingWindows(shortcut, 4);
+        direct.runtime.tileAll(name);
+        shortcut.shortcuts.get('Weave Tile All ' + name[0].toUpperCase() + name.slice(1)).handler();
+        assert.deepEqual(a.map(rectOf), b.map(rectOf), name);
+        assert.deepEqual(a.map(w => w.minimized), b.map(w => w.minimized), name);
+        assert.equal(direct.dbusCalls.length, 0);
+    });
+});
+
+test('stopping the runtime disconnects signals and ignores delayed work and shortcuts', () => {
+    const h = harness({manageClasses: 'editor', settleSeconds: 1});
+    const a = makeWindow('a');
+    h.add(a);
+    h.runtime.stop();
+    h.runtime.stop();
+    h.advance(5000);
+    h.add(makeWindow('b'));
+    fireShortcut(h, 'Toggle Float', a);
+    h.runtime.tileAll('columns');
+    h.changed.emit();
+    assert.ok(h.windows.every(w => w.geometryWrites === 0));
 });

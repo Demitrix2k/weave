@@ -1,15 +1,17 @@
 // Weave Layout Picker: a shortcut shows a card per layout on the monitor under the cursor.
 // Click a card, or use the keys (arrows, Return, 1-9 and 0, Escape) to choose. The overlay
-// closes first, then the Weave shortcut "Weave Tile All <Name>" is invoked through
-// kglobalaccel; Weave takes the monitor from the cursor, so the cursor is never moved.
+// closes first, then calls the owning Weave runtime directly. Weave takes the monitor
+// from the cursor, so the cursor is never moved.
 import QtQuick
 import QtQuick.Window as QW
 import org.kde.kwin
 import org.kde.kirigami as Kirigami
-import "layouts.js" as Data
+import "lib-@@BUILD_ID@@/layouts.js" as Data
 
 Item {
     id: root
+    required property var host
+    signal layoutSelected(string name)
 
     readonly property string actionName: "WeaveLayoutPickerShow"
     readonly property var digitKeys: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
@@ -20,15 +22,8 @@ Item {
     function keyName(k) { return "WeavePicker Key " + k; }
 
     function dbus(path, iface, method, args, done) {
-        const call = Qt.createQmlObject(
-            'import org.kde.kwin; DBusCall { service: "org.kde.kglobalaccel" }', root);
-        call.path = path;
-        call.dbusInterface = iface;
-        call.method = method;
-        call.arguments = args || [];
-        call.finished.connect(() => { done(); call.destroy(); });
-        call.failed.connect(() => { done(); call.destroy(); });
-        call.call();
+        host.callDBus("org.kde.kglobalaccel", path, iface, method,
+                      ...(args || []), done);
     }
 
     function screenUnderCursor() {
@@ -82,7 +77,7 @@ Item {
     function choose(index) {
         if (index < 0 || index >= Data.layouts.length) return;
         const name = Data.layouts[index].name;
-        pending = "Weave Tile All " + name.charAt(0).toUpperCase() + name.slice(1);
+        pending = name;
         closePicker();
         invokeTimer.restart();
     }
@@ -95,8 +90,7 @@ Item {
             const name = root.pending;
             root.pending = "";
             if (name)
-                root.dbus("/component/kwin", "org.kde.kglobalaccel.Component",
-                          "invokeShortcut", [name], () => {});
+                root.layoutSelected(name);
         }
     }
 

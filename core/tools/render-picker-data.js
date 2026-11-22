@@ -1,4 +1,4 @@
-// Writes script/picker/contents/ui/layouts.js: the thumbnail rectangles of the layout picker,
+// Writes script/contents/ui/layouts.js: the thumbnail rectangles of the layout picker,
 // as fractions of the work area (4 windows, 2560x1440 with small gaps).
 // Run from anywhere: node core/tools/render-picker-data.js
 const fs = require('node:fs');
@@ -42,7 +42,7 @@ function render() {
     '.pragma library\n\nvar layouts = [\n' + rows + '];\n';
 }
 
-const file = path.join(__dirname, '..', '..', 'script', 'picker', 'contents', 'ui', 'layouts.js');
+const file = path.join(__dirname, '..', '..', 'script', 'contents', 'ui', 'layouts.js');
 if (require.main === module) {
   fs.mkdirSync(path.dirname(file), {recursive: true});
   fs.writeFileSync(file, render());
