@@ -1,7 +1,13 @@
-(function (host) {
+function startWeave(host, api, templates) {
     "use strict";
 
-    var api = Weave;
+    // All compositor access comes through the injected host.
+    var workspace = host.workspace;
+    var KWin = host.KWin;
+    var print = host.print;
+    var registerShortcut = host.registerShortcut;
+    var connections = [];
+    var disposed = false;
     var states = new Map();
     var contexts = new Map();
     var config = {};
@@ -29,7 +35,7 @@
     var STAGE_RAIL_MIN = {w: 140, h: 110};
     var ownActivation = null;
     var parkingDepth = 0;
-    var templates = typeof WEAVE_TEMPLATES === "undefined" ? {} : WEAVE_TEMPLATES;
+    templates = templates || {};
     var activation = new Map();
     var activationTick = 0;
     var arrivalSeq = 0;
@@ -55,6 +61,7 @@
 
     function guarded(name, handler) {
         return function () {
+            if (disposed) { return; }
             try { return handler.apply(null, arguments); }
             catch (error) { logError(name, error); }
         };
@@ -64,7 +71,9 @@
         try {
             var signal = property(object, name);
             if (!signal || typeof signal.connect !== "function") { return false; }
-            signal.connect(guarded(name, handler));
+            var callback = guarded(name, handler);
+            signal.connect(callback);
+            connections.push({signal: signal, callback: callback});
             return true;
         } catch (error) { logError("connect " + name, error); return false; }
     }
@@ -207,7 +216,6 @@
 
     function readConfigValue(name, fallback) {
         try {
-            if (typeof readConfig === "function") { return readConfig(name, fallback); }
             if (host && typeof host.readConfig === "function") {
                 return host.readConfig(name, fallback);
             }
@@ -559,17 +567,6 @@
             host.startTimer(milliseconds, callback);
             return true;
         }
-        try {
-            if (typeof Qt !== "undefined" && typeof Qt.createQmlObject === "function") {
-                var timer = Qt.createQmlObject(
-                    "import QtQuick 2.0\nTimer { repeat: false }", workspace,
-                    "WeaveSettleTimer");
-                timer.interval = milliseconds;
-                timer.triggered.connect(callback);
-                timer.start();
-                return true;
-            }
-        } catch (error) { logError("create settle timer", error); }
         return false;
     }
 
@@ -615,7 +612,6 @@
     }
 
     function sendDBus() {
-        if (typeof callDBus === "function") { return callDBus.apply(null, arguments); }
         if (host && typeof host.callDBus === "function") {
             return host.callDBus.apply(host, arguments);
         }
@@ -2120,4 +2116,19 @@
         if (observing) { extendSettle(); }
         else { adoptCandidates(); }
     })();
-})(this);
+    return {
+        tileAll: guarded("picker tile all", function (name) {
+            settleEvent();
+            tileAll(name);
+        }),
+        stop: function () {
+            if (disposed) { return; }
+            aboutToQuit();
+            disposed = true;
+            connections.forEach(function (entry) {
+                try { entry.signal.disconnect(entry.callback); } catch (ignored) {}
+            });
+            connections = [];
+        }
+    };
+}

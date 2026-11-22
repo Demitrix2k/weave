@@ -23,6 +23,7 @@ cat \
 # The adapter cannot read files, so the arrangement templates are inlined as data.
 printf '\nvar WEAVE_TEMPLATES = %s;\n' "$(cat "$root/core/templates.json")"
 cat "$root/script/src/adapter.js"
+printf '\nstartWeave(this, Weave, WEAVE_TEMPLATES);\n'
 } > "$tmp"
 if command -v sha256sum >/dev/null 2>&1; then
     hash=$(sha256sum "$tmp" | cut -c1-8)

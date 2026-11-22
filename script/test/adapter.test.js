@@ -17,6 +17,7 @@ function signal() {
     const handlers = [];
     return {
         connect(handler) { handlers.push(handler); },
+        disconnect(handler) { const i = handlers.indexOf(handler); if (i >= 0) handlers.splice(i, 1); },
         emit(...args) { handlers.slice().forEach(handler => handler(...args)); }
     };
 }
@@ -153,8 +154,8 @@ function harness(settings = {}, options = {}) {
             }
         };
     }
-    vm.runInContext(options.bareHost ? source.replace(/\}\)\(this\);\s*$/, '})({});') : source,
-        sandbox);
+    vm.runInContext(source, sandbox);
+    const runtime = sandbox.startWeave(sandbox, sandbox.Weave, sandbox.WEAVE_TEMPLATES);
     function add(window) {
         windows.push(window);
         added.emit(window);
@@ -181,7 +182,7 @@ function harness(settings = {}, options = {}) {
         workspace.windowActivated.emit(window);
     }
     return {workspace, shortcuts, logs, windows, add, remove, changed, settings,
-        advance, now: () => now, dbusCalls, quit, activate};
+        advance, now: () => now, dbusCalls, quit, activate, runtime};
 }
 
 function geometry(window) {
@@ -720,9 +721,9 @@ test('persistence is off when callDBus is missing, throws or the reply is not te
     });
 });
 
-test('persistence works when only globals exist and the host object is empty', () => {
+test('persistence works through the injected host API', () => {
     const h = harness({manageClasses: 'editor', settleSeconds: 0, logLevel: 'debug'},
-        {dbus: {reply: '{}'}, bareHost: true});
+        {dbus: {reply: '{}'}});
     h.add(makeWindow('a'));
     fireShortcut(h, 'Toggle Float', h.windows[0]);
     h.advance(5000);
