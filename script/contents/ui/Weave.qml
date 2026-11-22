@@ -13,7 +13,16 @@ Item {
     Component { id: dbusFactory; DBusCall {} }
 
     Component.onCompleted: {
-        host = Host.createHost(Workspace, KWin, Options, Qt.application, {
+        // In declarative scripts the client-area enum lives on Workspace (KWin 6.8:
+        // KWin.PlacementArea is undefined, Workspace.PlacementArea is 0), and enums don't
+        // travel with an object handed to JS, so pass the values the adapter needs.
+        var kwin = {
+            PlacementArea: Workspace.PlacementArea,
+            MaximizeArea: Workspace.MaximizeArea,
+            FullScreenArea: Workspace.FullScreenArea,
+            readConfig: function (name, fallback) { return KWin.readConfig(name, fallback); }
+        };
+        host = Host.createHost(Workspace, kwin, Options, Qt.application, {
             shortcut: function (properties) { return shortcutFactory.createObject(root, properties); },
             timer: function (properties) { return timerFactory.createObject(root, properties); },
             dbus: function (properties) { return dbusFactory.createObject(root, properties); }
