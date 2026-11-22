@@ -1,18 +1,40 @@
 # Weave KWin adapter v0
 
-This repository contains the pure layout core and classic KWin script adapter.
-`manageClasses` defaults to empty, so no windows are managed until classes are
-explicitly listed. Shortcut registrations have empty default keys; the separate
-shortcut-profile tool assigns keys.
+This repository contains the pure layout core and one declarative KWin package:
+Weave runs the adapter and the layout picker together. `manageClasses` defaults to
+empty, so no windows are managed until classes are explicitly listed. Shortcut
+registrations retain their names and empty default keys; existing bindings carry over.
 
-Build the classic KWin script with `./script/build.sh`.
-The build writes the package to `script/dist/` (ignored by Git; install that
-directory). KWin ignores `X-Plasma-MainScript` for classic scripts, so the code stays
-in `contents/code/main.js`; the build injects a content hash and the adapter logs
-`weave loaded build=<hash8>` at info level. A script enabled through the config is
-loaded on reconfigure but only runs after `qdbus6 org.kde.KWin /Scripting start`, and
-disabling does not unload it (use `unloadScript weave`), so the live harness does both.
-Run all tests with `node --test core/test script/test`.
+Build with `./script/build.sh`. The single package is `script/dist/` (ignored by Git).
+Its entry point is `contents/ui/main.qml`, which loads `Weave.qml`; that component
+builds the KWin host shim, starts the JS adapter and hosts the picker. The unchanged
+core is bundled with the adapter into `lib-<hash>/weave.js`; the shim and picker data
+also use hashed import paths to avoid KWin's imported-JS cache. The adapter logs
+`weave loaded build=<hash8>` at info level, matching `script/dist/BUILD_ID`.
+
+Install when ready to change the live desktop:
+
+```sh
+sh script/build.sh
+kpackagetool6 --type=KWin/Script -i script/dist   # -u for an existing Weave package
+kwriteconfig6 --file kwinrc --group Plugins --key weaveEnabled true
+qdbus6 org.kde.KWin /KWin reconfigure
+qdbus6 org.kde.KWin /Scripting start
+```
+
+For an update, unload `weave` before `-u` (`qdbus6 org.kde.KWin /Scripting unloadScript weave`).
+Disabling alone does not reliably unload a script. There is one enable toggle, Weave.
+If the old separate picker is installed, follow **Migration** below before loading
+this build. Do not run the live harness or install while the user is working without
+an explicit go-ahead.
+
+Offline checks: `node --test --test-concurrency=1 core/test script/test` and
+`python3 -B -m unittest discover -s helper -p 'test_*.py'`. Serialize the Node test files
+because package and harness tests rebuild the shared `script/dist/`. The QML test
+uses Qt 6 Quick Test (`/usr/lib/qt6/bin/qmltestrunner`, override with
+`QT6_QMLTESTRUNNER`), QtQuick and Kirigami. It uses fake KWin types, an offscreen software
+renderer, temporary HOME/XDG directories and an inaccessible D-Bus address; it cannot
+exercise native shortcut registration or the real compositor.
 
 Settings are available from System Settings → Window Management → KWin Scripts → Weave →
 Configure. Applying the dialog writes the options to `[Script-weave]` in `kwinrc`; the
@@ -54,7 +76,8 @@ them arrives tiled, any other managed window arrives with `defaultMode`.
 `internalId`, and maintains separate master-stack trees for each output and
 that output's current desktop.
 
-The adapter uses only KWin's documented script globals and signals plus the
+The adapter receives KWin through `script/src/host.js`, including Workspace,
+Options, configuration, shortcuts, timers and D-Bus. It uses the signals and
 feature-detected properties described in `DESIGN.md` and the drag-log spike.
 Runtime API assumptions that still need checking in a real KWin session are
 listed in the implementation summary when this source is delivered.
@@ -227,7 +250,7 @@ being moved; the fork's Rectangle-state bookkeeping (unsnap restore) does not ex
   context keeps its layout. Windows of other contexts and arranged windows are not touched.
 - `Weave Tile All Master` / `Columns` / `Monocle` / `Spiral` / `Rows` / `Hstack` / `Rmaster` /
   `Grid` / `Ultrawide` / `Stage` (empty default keys; one per layout, named like the Layout
-  shortcuts, so a picker can call them through kglobalaccel `invokeShortcut`): they act on the
+  shortcuts; the integrated picker calls the same adapter function directly): they act on the
   context (output and its current desktop) of the monitor under the mouse cursor, found as the
   output whose geometry holds `workspace.cursorPos`, and do nothing if the cursor is on none.
   The context's layout becomes the named one and every floating managed window in it is tiled
@@ -352,48 +375,62 @@ stacked right. With `WEAVE_LIVETEST_SHOTS=<dir>` set, each layout is also photog
 no screenshots. Example:
 `WEAVE_LIVETEST_SHOTS=$HOME/shots timeout 400 sh script/livetest/livetest.sh --takeover`.
 
+The harness installs the single declarative package through its metadata; its small
+inspection probes remain classic JS loaded with `loadScript`. Migrate the separate
+picker first: the harness only snapshots and restores the `weave` package.
+
 Tests: `script/test/livetest.test.js` runs the real harness against stub executables
 (`kreadconfig6`, `kwriteconfig6`, `kpackagetool6`, `qdbus6`, `journalctl`, `kcalc`, ...)
 in a temporary `HOME`; the test hooks are the environment variables
 `WEAVE_LIVETEST_KWINRC` and `WEAVE_LIVETEST_SCRIPTS` (defaults: the real paths).
 
-## Layout picker (`weave-picker`)
+## Layout picker (inside `weave`)
 
-A second KWin package that shows an overlay with a card per layout (master, columns,
-monocle, spiral, rows, hstack, rmaster, grid, ultrawide, stage) on the monitor under the
-cursor. Choosing one runs the Weave shortcut `Weave Tile All <Name>`.
+The Weave package shows a card per layout (master, columns, monocle, spiral, rows,
+hstack, rmaster, grid, ultrawide, stage, scroll) on the monitor under the cursor.
+Choosing one calls the same adapter `tileAll(name)` function as `Weave Tile All <Name>`.
+The overlay closes first and waits 50 ms before calling it; the cursor is never moved.
+No kglobalaccel `invokeShortcut` round trip is involved.
 
-Install (builds with `script/build.sh`, which also calls `script/build-picker.sh`):
+Bind `Weave Layout Picker: Show or hide the layout picker` in System Settings →
+Shortcuts. Its ID remains `WeaveLayoutPickerShow`, so the user's Meta+T binding is
+preserved. There is no second package to enable.
 
-    sh script/build.sh
-    kpackagetool6 --type=KWin/Script -i script/dist-picker   # -u to update
-    kwriteconfig6 --file kwinrc --group Plugins --key weave-pickerEnabled true
-    qdbus6 org.kde.KWin /KWin reconfigure
+The overlay is a frameless, unmanaged window covering the monitor under
+`Workspace.cursorPos`. KWin does not give its own QML windows keyboard focus, so
+while open the picker uses temporary global shortcuts named `WeavePicker Key ...`:
+arrows move the selection, Return chooses, `1`–`9` and `0` select the first ten
+layouts, and Escape closes. Scroll can be selected with arrows/Return or a click.
+A card click chooses it; a click outside the cards or on another window closes it.
+The thumbnails are `script/contents/ui/layouts.js`, generated by
+`node core/tools/render-picker-data.js` and checked by a test.
 
-Then bind a key to `Weave Layout Picker: Show or hide the layout picker` in System Settings >
-Shortcuts (it has no default key). Weave itself must be loaded.
+Temporary shortcuts are unregistered through D-Bus on close and destruction. If KWin
+freezes while the picker is open they may remain and swallow keys; inspect
+`WeavePicker` entries in `~/.config/kglobalshortcutsrc` before removing any leftovers.
+The overlay caption remains `Weave Layout Picker overlay` for border-effect exclusions.
 
-How it works: the overlay is a frameless, unmanaged window covering the monitor under
-`Workspace.cursorPos`. KWin never gives its own QML windows keyboard focus, so while it is
-open the keys are temporary global shortcuts named `WeavePicker Key ...`: Left/Right/Up/Down
-move the selection, Return chooses it, `1`-`9` and `0` choose a layout directly, Escape
-closes. A click on a card chooses it; a click outside the cards, or on another window,
-closes without change. On choosing, the overlay closes, 50 ms later the Weave shortcut is
-invoked through kglobalaccel (`invokeShortcut` on `/component/kwin`); the cursor is never
-moved, because Weave picks the target monitor from it. The thumbnails come from
-`script/picker/contents/ui/layouts.js`, generated from the core with
-`node core/tools/render-picker-data.js` (checked by a test).
+### Migration from the separate picker
 
-Warning: all temporary shortcuts are unregistered on close and when the script is
-destroyed. If KWin freezes while the picker is open they may be left behind and keep
-swallowing Escape, Return, the arrows and digits. Check with
-`grep WeavePicker ~/.config/kglobalshortcutsrc` and remove leftovers.
+After backing up the installed packages and when ready for a live change, unload both
+old scripts before updating Weave. This avoids registering the picker action twice:
 
-Border effects: the overlay window's caption is `Weave Layout Picker overlay`; add it to
-KDE Rounded Corners' exclusions (`[Round-Corners] Exclusions=`) so it gets no outline.
+```sh
+qdbus6 org.kde.KWin /Scripting unloadScript weave-picker
+qdbus6 org.kde.KWin /Scripting unloadScript weave
+kpackagetool6 --type=KWin/Script -r weave-picker
+kwriteconfig6 --file kwinrc --group Plugins --key weave-pickerEnabled --delete
+kpackagetool6 --type=KWin/Script -u script/dist
+qdbus6 org.kde.KWin /KWin reconfigure
+qdbus6 org.kde.KWin /Scripting start
+```
 
-Qt caches a folder's file list and imported JS until logout: after an update (`-u`) toggle
-the script off and on; the data file lives in `contents/ui/lib-<hash>/` for that reason.
+Keep `[Script-weave]` and all shortcut bindings; no config-schema migration is needed.
+For backup and exact rollback commands, see [the merge report](../docs/picker-merge-report.md).
+
+After later in-place updates, unload/reconfigure/start Weave. `main.qml` stays a tiny
+stable loader; fresh component URLs and `contents/ui/lib-<hash>/` imports let changes
+take effect without logging out.
 
 ## Scroll layout (Pages)
 
