@@ -1,6 +1,8 @@
 pragma Singleton
 import QtQuick
 QtObject {
+    // Real KWin 6.8 declares ClientAreaOption on Workspace; KWin.PlacementArea is undefined.
+    enum ClientAreaOption { PlacementArea, MovementArea, MaximizeArea, MaximizeFullArea, FullScreenArea, WorkArea, FullArea, ScreenArea }
     property list<QtObject> windows
     property var screens: [{name: "DP-1", geometry: Qt.rect(0, 0, 1200, 800)}]
     property var activeScreen: screens[0]
