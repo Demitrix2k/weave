@@ -426,7 +426,7 @@ qdbus6 org.kde.KWin /Scripting start
 ```
 
 Keep `[Script-weave]` and all shortcut bindings; no config-schema migration is needed.
-For backup and exact rollback commands, see [the merge report](../docs/picker-merge-report.md).
+To roll back, back up `~/.local/share/kwin/scripts/weave` before installing and reinstall that copy with `kpackagetool6 --type=KWin/Script -u <backup>`.
 
 After later in-place updates, unload/reconfigure/start Weave. `main.qml` stays a tiny
 stable loader; fresh component URLs and `contents/ui/lib-<hash>/` imports let changes
